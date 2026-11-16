@@ -2,11 +2,6 @@ generator client {
       provider = "prisma-client-js"
 }
 
-datasource db {
-      provider = "postgresql"
-        url      = env("DATABASE_URL")
-}
-
 model Viewer {
       id              String     @id @default(cuid())
         userIdHash      String     @unique // 치지직 고유 유저 식별 해시
