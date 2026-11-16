@@ -1,0 +1,9 @@
+# Project: Chzzk AI Prompter (Mobile-First PWA)
+- Tech Stack: Next.js (App Router), TypeScript, Tailwind CSS, Prisma (PostgreSQL), Node.js Worker (`tsx`).
+- Target UI: Mobile portrait screen (375px~430px), OLED Dark Mode (#000000 / #111318), large typography for at-a-glance reading during live streaming.
+- Rules:
+  1. Always use strict TypeScript types. No `any`.
+    2. Separate real-time WebSocket ingestion (`worker/index.ts`) from Next.js API routes.
+      3. Never let LLM hallucinate numbers (donation amounts, visit counts). Inject exact DB values directly into the UI.
+        4. Write all code comments and UI copy in natural Korean.
+        
