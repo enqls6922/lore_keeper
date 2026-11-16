@@ -43,3 +43,8 @@ model Briefing {
                       isPinned         Boolean  @default(false)
                         createdAt        DateTime @default(now())
 }
+
+datasource db {
+    provider = "sqlite"
+      url      = env("DATABASE_URL")
+}
