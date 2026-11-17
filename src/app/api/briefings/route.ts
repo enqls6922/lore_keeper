@@ -11,7 +11,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * 최신 20장. 고정된 카드가 항상 위이고, 같은 그룹 안에서는 최근 생성순이다.
+ * 최신 20장. 고정이 위, 미완료가 그다음, 완료는 아래다. 같은 묶음 안에서는 최근 생성순이다.
  * 폴링이 빌드 시점 스냅샷을 받지 않도록 요청이 들어온 뒤에 조회한다.
  */
 export async function GET(): Promise<Response> {
@@ -26,7 +26,7 @@ export async function GET(): Promise<Response> {
     const rows = await prisma.briefing.findMany({
       where: { userId: user.id },
       include: briefingInclude,
-      orderBy: [{ isPinned: "desc" }, { createdAt: "desc" }],
+      orderBy: [{ isPinned: "desc" }, { isDone: "asc" }, { createdAt: "desc" }],
       take: LATEST_LIMIT,
     });
 

@@ -182,6 +182,8 @@ async function simulateOnce(): Promise<void> {
     triggerType,
     triggerMessage: event.message,
     cheeseAmount: event.cheeseAmount,
+    streamTone: "친근한 반말",
+    streamContext: null,
   });
 
   if (!briefing) {
