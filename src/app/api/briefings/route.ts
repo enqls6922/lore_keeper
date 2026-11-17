@@ -1,5 +1,6 @@
 import { connection } from "next/server";
 
+import { requireUser, unauthorizedResponse } from "@/lib/auth/current-user";
 import { briefingInclude, toBriefingCard } from "@/lib/briefing-mapper";
 import { prisma } from "@/lib/prisma";
 
@@ -16,8 +17,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export async function GET(): Promise<Response> {
   await connection();
 
+  const user = await requireUser();
+  if (!user) {
+    return unauthorizedResponse();
+  }
+
   try {
     const rows = await prisma.briefing.findMany({
+      where: { userId: user.id },
       include: briefingInclude,
       orderBy: [{ isPinned: "desc" }, { createdAt: "desc" }],
       take: LATEST_LIMIT,
@@ -46,10 +53,15 @@ export async function PATCH(request: Request): Promise<Response> {
       return Response.json({ message: "브리핑 id가 필요합니다." }, { status: 400 });
     }
 
+    const user = await requireUser();
+    if (!user) {
+      return unauthorizedResponse();
+    }
+
     const id = body.id.trim();
     const updated = await prisma.$transaction(async (tx) => {
-      const current = await tx.briefing.findUnique({
-        where: { id },
+      const current = await tx.briefing.findFirst({
+        where: { id, userId: user.id },
         include: briefingInclude,
       });
       if (!current) {

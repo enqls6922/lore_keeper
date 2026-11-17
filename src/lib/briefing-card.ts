@@ -15,6 +15,7 @@ export interface BriefingCard {
   summarySnapshot: string;
   suggestedReplies: string[];
   isPinned: boolean;
+  isDone: boolean;
   createdAt: string;
   viewer: BriefingViewerSnapshot;
 }
@@ -64,6 +65,7 @@ export function isBriefingCard(value: unknown): value is BriefingCard {
     Array.isArray(value.suggestedReplies) &&
     value.suggestedReplies.every((reply) => typeof reply === "string") &&
     typeof value.isPinned === "boolean" &&
+    typeof value.isDone === "boolean" &&
     typeof value.createdAt === "string"
   );
 }

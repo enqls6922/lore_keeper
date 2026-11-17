@@ -40,6 +40,7 @@ export function toBriefingCard(row: BriefingWithViewer): BriefingCard {
     summarySnapshot: row.summarySnapshot,
     suggestedReplies: readReplies(row.suggestedReplies),
     isPinned: row.isPinned,
+    isDone: row.isDone,
     createdAt: row.createdAt.toISOString(),
     viewer: {
       nickname: row.viewer.nickname,
