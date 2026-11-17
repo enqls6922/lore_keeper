@@ -60,12 +60,63 @@ const generationConfig: GenerationConfig = {
   },
 };
 
-function readApiKey(): string {
+function readApiKey(): string | null {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
-  if (!apiKey) {
-    throw new Error("GEMINI_API_KEY 환경변수가 비어 있습니다.");
+  return apiKey ? apiKey : null;
+}
+
+function formatFact(value: number): string {
+  return value.toLocaleString("ko-KR");
+}
+
+/** 모델이 없을 때도 사실 데이터에 있는 숫자만 써서 카드를 만든다. */
+function buildFactualDraft(input: GenerateBriefingInput): BriefingDraft {
+  const nickname = input.viewer.nickname;
+  const cheeseAmount = formatFact(input.cheeseAmount);
+  const totalCheese = formatFact(input.viewer.totalCheese);
+  const visitCount = formatFact(input.viewer.visitCount);
+
+  if (input.triggerType === "CHEESE") {
+    return {
+      summary: `${nickname}님이 치즈 ${cheeseAmount}개를 보냈습니다. 누적 ${totalCheese}개, 방문 ${visitCount}회.`,
+      suggestedReplies: [
+        `${nickname} 치즈 ${cheeseAmount}개 고마워`,
+        `누적 ${totalCheese}개, 방문 ${visitCount}회째네`,
+      ],
+    };
   }
-  return apiKey;
+
+  if (input.triggerType === "NEW_VIEWER") {
+    return {
+      summary: `${nickname}님이 처음 채팅을 남겼습니다. 방문 ${visitCount}회.`,
+      suggestedReplies: [`${nickname} 첫 방문 환영해`, `방문 ${visitCount}회, 오늘 처음이구나`],
+    };
+  }
+
+  return {
+    summary: `${nickname}님이 다시 찾았습니다. 누적 치즈 ${totalCheese}개, 방문 ${visitCount}회.`,
+    suggestedReplies: [`${nickname} 또 와 줘서 반가워`, `누적 ${totalCheese}개, 방문 ${visitCount}회째네`],
+  };
+}
+
+async function saveBriefing(input: GenerateBriefingInput, draft: BriefingDraft): Promise<Briefing> {
+  return prisma.$transaction(async (tx) => {
+    const briefing = await tx.briefing.create({
+      data: {
+        viewerId: input.viewer.id,
+        triggerType: input.triggerType,
+        triggerMessage: input.triggerMessage,
+        cheeseAmount: input.cheeseAmount,
+        summarySnapshot: draft.summary,
+        suggestedReplies: draft.suggestedReplies,
+      },
+    });
+    await tx.viewer.update({
+      where: { id: input.viewer.id },
+      data: { aiSummary: draft.summary },
+    });
+    return briefing;
+  });
 }
 
 function formatChatLine(
@@ -134,34 +185,34 @@ function parseDraft(raw: string): BriefingDraft {
 
 /**
  * 시청자 사실과 이번 이벤트로 한 줄 요약·추천 멘트를 만들고 Briefing에 저장한다.
- * 모델 호출이 실패해도 호출한 워커가 죽지 않도록 null을 반환한다.
+ * 키가 있으면 gemini-2.5-flash-lite JSON을 쓰고, 실패하면 사실 데이터만으로 저장한다.
  */
 export async function generateBriefing(
   input: GenerateBriefingInput,
 ): Promise<Briefing | null> {
+  const apiKey = readApiKey();
+  if (apiKey) {
+    try {
+      const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({
+        model: MODEL_NAME,
+        systemInstruction: SYSTEM_PROMPT,
+        generationConfig,
+      });
+      const result = await model.generateContent(buildUserPrompt(input));
+      return await saveBriefing(input, parseDraft(result.response.text()));
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[generateBriefing] 모델 호출에 실패해 사실 데이터로 저장합니다. ${message}`);
+    }
+  } else {
+    console.error("[generateBriefing] GEMINI_API_KEY가 없어 사실 데이터로 브리핑을 만듭니다.");
+  }
+
   try {
-    const model = new GoogleGenerativeAI(readApiKey()).getGenerativeModel({
-      model: MODEL_NAME,
-      systemInstruction: SYSTEM_PROMPT,
-      generationConfig,
-    });
-
-    const result = await model.generateContent(buildUserPrompt(input));
-    const draft = parseDraft(result.response.text());
-
-    return await prisma.briefing.create({
-      data: {
-        viewerId: input.viewer.id,
-        triggerType: input.triggerType,
-        triggerMessage: input.triggerMessage,
-        cheeseAmount: input.cheeseAmount,
-        summarySnapshot: draft.summary,
-        suggestedReplies: draft.suggestedReplies,
-      },
-    });
+    return await saveBriefing(input, buildFactualDraft(input));
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`[generateBriefing] 브리핑 생성에 실패했습니다. ${message}`);
+    console.error(`[generateBriefing] 브리핑 저장에 실패했습니다. ${message}`);
     return null;
   }
 }

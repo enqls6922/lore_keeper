@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { useChzzkChat } from "@/hooks/useChzzkChat";
 import {
   compareBriefingCards,
   isBriefingCard,
@@ -12,8 +13,17 @@ import {
 
 const POLL_MS = 2_000;
 const TOAST_MS = 1_600;
+const REGULAR_HASH = "user_regular_demo";
+const REGULAR_CHEESE = 10_000;
 
-type LinkStatus = "loading" | "live" | "offline";
+type PollStatus = "loading" | "live" | "offline";
+
+interface SimulatorEvent {
+  userIdHash: string;
+  nickname: string;
+  message: string;
+  cheeseAmount: number;
+}
 
 function formatCount(value: number): string {
   return value.toLocaleString("ko-KR");
@@ -39,25 +49,38 @@ function badgeClass(triggerType: BriefingTriggerType): string {
   return "bg-[#1A2233] text-[#C9D4EA]";
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function readPostedBriefing(value: unknown): BriefingCard | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  return isBriefingCard(value.briefing) ? value.briefing : null;
+}
+
 export default function HomePage() {
   const [cards, setCards] = useState<BriefingCard[]>([]);
-  const [linkStatus, setLinkStatus] = useState<LinkStatus>("loading");
+  const [pollStatus, setPollStatus] = useState<PollStatus>("loading");
   const [freshIds, setFreshIds] = useState<ReadonlySet<string>>(new Set());
   const [toast, setToast] = useState<string | null>(null);
   const [wakeOn, setWakeOn] = useState(false);
   const [wakeSupported, setWakeSupported] = useState(true);
+  const [channelId, setChannelId] = useState("");
+  const [chatEnabled, setChatEnabled] = useState(false);
+  const [sending, setSending] = useState(false);
   const knownIds = useRef<Set<string>>(new Set());
   const firstLoad = useRef(true);
   const polling = useRef(false);
   const wakeLock = useRef<WakeLockSentinel | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const chat = useChzzkChat(channelId, chatEnabled);
 
   const applyCards = useCallback((nextCards: BriefingCard[]) => {
     const sorted = [...nextCards].sort(compareBriefingCards);
     if (!firstLoad.current) {
-      const arrived = sorted
-        .map((card) => card.id)
-        .filter((id) => !knownIds.current.has(id));
+      const arrived = sorted.map((card) => card.id).filter((id) => !knownIds.current.has(id));
       if (arrived.length > 0) {
         setFreshIds(new Set(arrived));
       }
@@ -65,6 +88,18 @@ export default function HomePage() {
     firstLoad.current = false;
     knownIds.current = new Set(sorted.map((card) => card.id));
     setCards(sorted);
+  }, []);
+
+  const mergeCard = useCallback((card: BriefingCard) => {
+    setCards((current) => {
+      const next = current.some((item) => item.id === card.id)
+        ? current.map((item) => (item.id === card.id ? card : item))
+        : [card, ...current];
+      next.sort(compareBriefingCards);
+      knownIds.current = new Set(next.map((item) => item.id));
+      return next;
+    });
+    setFreshIds(new Set([card.id]));
   }, []);
 
   useEffect(() => {
@@ -86,13 +121,13 @@ export default function HomePage() {
         }
         if (!cancelled) {
           applyCards(payload);
-          setLinkStatus("live");
+          setPollStatus("live");
         }
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : "연결 실패";
         console.error(`[대시보드] ${message}`);
         if (!cancelled) {
-          setLinkStatus("offline");
+          setPollStatus("offline");
         }
       } finally {
         polling.current = false;
@@ -162,6 +197,14 @@ export default function HomePage() {
     };
   }, []);
 
+  const showToast = useCallback((message: string) => {
+    setToast(message);
+    if (toastTimer.current) {
+      clearTimeout(toastTimer.current);
+    }
+    toastTimer.current = setTimeout(() => setToast(null), TOAST_MS);
+  }, []);
+
   async function toggleWake(): Promise<void> {
     if (!("wakeLock" in navigator)) {
       setWakeSupported(false);
@@ -210,21 +253,61 @@ export default function HomePage() {
       document.execCommand("copy");
       field.remove();
     }
-
-    setToast("복사됨!");
-    if (toastTimer.current) {
-      clearTimeout(toastTimer.current);
-    }
-    toastTimer.current = setTimeout(() => setToast(null), TOAST_MS);
+    showToast("복사됨!");
   }
 
-  const statusText =
-    linkStatus === "live"
-      ? "실시간 감지 중"
-      : linkStatus === "loading"
+  async function sendSimulator(event: SimulatorEvent): Promise<void> {
+    if (sending) {
+      return;
+    }
+    setSending(true);
+    try {
+      const response = await fetch("/api/events", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(event),
+      });
+      const payload: unknown = await response.json().catch(() => null);
+      if (!response.ok) {
+        const message =
+          isRecord(payload) && typeof payload.message === "string"
+            ? payload.message
+            : "시뮬레이터 이벤트를 보내지 못했습니다.";
+        showToast(message);
+        return;
+      }
+      const card = readPostedBriefing(payload);
+      if (card) {
+        mergeCard(card);
+        return;
+      }
+      showToast("이벤트는 저장됐고, 브리핑은 만들지 못했습니다.");
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "시뮬레이터 전송 실패";
+      console.error(`[시뮬레이터] ${message}`);
+      showToast("시뮬레이터 이벤트를 보내지 못했습니다.");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  const statusText = chatEnabled
+    ? chat.status === "live"
+      ? "실시간 연결 중"
+      : chat.status === "connecting"
         ? "연결하는 중"
-        : "연결이 끊겼습니다";
-  const statusDot = linkStatus === "live" ? "bg-[#3DDC97]" : linkStatus === "loading" ? "bg-[#8B93A7]" : "bg-[#FF5C5C]";
+        : chat.status === "offline"
+          ? "방송 채팅에 붙지 못했습니다"
+          : chat.status === "error"
+            ? "연결 오류"
+            : "대기 중"
+    : pollStatus === "live"
+      ? "브리핑 수신 중"
+      : pollStatus === "loading"
+        ? "연결하는 중"
+        : "브리핑 연결이 끊겼습니다";
+  const statusLive = chatEnabled ? chat.status === "live" : pollStatus === "live";
+  const statusDot = statusLive ? "bg-[#3DDC97]" : statusText.includes("중") ? "bg-[#8B93A7]" : "bg-[#FF5C5C]";
 
   return (
     <div className="mx-auto flex min-h-full w-full max-w-[430px] flex-col bg-black text-white">
@@ -244,16 +327,51 @@ export default function HomePage() {
             {wakeSupported ? (wakeOn ? "화면 유지 중" : "화면 켜 두기") : "화면 유지 불가"}
           </button>
         </div>
+
+        <label className="mt-3 block text-sm font-bold text-[#AEB6C9]" htmlFor="channel-id">
+          치지직 채널 ID
+          <input
+            id="channel-id"
+            value={channelId}
+            onChange={(event) => {
+              setChannelId(event.target.value);
+              setChatEnabled(false);
+            }}
+            placeholder="채널 ID"
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+            className="mt-1 min-h-12 w-full rounded-2xl bg-[#14171F] px-4 text-base font-semibold text-white outline-none placeholder:text-[#6E768A]"
+          />
+        </label>
+
+        <button
+          type="button"
+          disabled={channelId.trim().length === 0}
+          onClick={() => {
+            setChatEnabled((current) => !current);
+          }}
+          className={`mt-2 min-h-12 w-full rounded-2xl text-base font-extrabold disabled:text-[#8B93A7] ${
+            chatEnabled ? "bg-[#3A1214] text-[#FFB4B4]" : "bg-[#14171F] text-white"
+          }`}
+        >
+          {chatEnabled ? "연결 끊기" : "실시간 연결"}
+        </button>
+
         <p className="mt-2 flex items-center gap-2 text-base font-semibold text-[#D7DDEA]">
-          <span className={`inline-block h-3 w-3 rounded-full ${statusDot} ${linkStatus === "live" ? "shadow-[0_0_10px_#3DDC97]" : ""}`} />
+          <span
+            className={`inline-block h-3 w-3 rounded-full ${statusDot} ${statusLive ? "shadow-[0_0_10px_#3DDC97]" : ""}`}
+          />
           {statusText}
         </p>
+        {chat.liveTitle ? <p className="mt-1 text-sm font-semibold text-[#AEB6C9]">{chat.liveTitle}</p> : null}
+        {chat.errorMessage ? <p className="mt-1 text-sm font-semibold text-[#FFB4B4]">{chat.errorMessage}</p> : null}
       </header>
 
-      <main className="flex flex-1 flex-col gap-3 px-4 py-4">
+      <main className="flex flex-1 flex-col gap-3 px-4 py-4 pb-36">
         {cards.length === 0 ? (
           <p className="rounded-[20px] bg-[#14171F] px-5 py-8 text-lg leading-7 text-[#C4CAD8]">
-            {linkStatus === "offline"
+            {pollStatus === "offline"
               ? "브리핑을 불러오지 못했습니다. 잠시 후 다시 시도합니다."
               : "아직 올라온 브리핑이 없습니다. 후원이나 첫 방문이 오면 여기에 뜹니다."}
           </p>
@@ -313,10 +431,46 @@ export default function HomePage() {
         )}
       </main>
 
+      <div className="fixed bottom-0 left-1/2 z-20 w-full max-w-[430px] -translate-x-1/2 border-t border-white/10 bg-black px-4 py-3">
+        <p className="text-sm font-extrabold text-[#D7DDEA]">🧪 시뮬레이터</p>
+        <div className="mt-2 grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            disabled={sending}
+            onClick={() => {
+              void sendSimulator({
+                userIdHash: REGULAR_HASH,
+                nickname: "단골팬",
+                message: "오늘도 치즈 보낼게",
+                cheeseAmount: REGULAR_CHEESE,
+              });
+            }}
+            className="min-h-12 rounded-2xl bg-[#3A2E08] px-2 text-sm font-extrabold text-[#FFE08A] disabled:opacity-60"
+          >
+            💰 단골 1만 치즈 후원
+          </button>
+          <button
+            type="button"
+            disabled={sending}
+            onClick={() => {
+              void sendSimulator({
+                userIdHash: `user_new_${crypto.randomUUID()}`,
+                nickname: "새시청자",
+                message: "처음 들렀어요",
+                cheeseAmount: 0,
+              });
+            }}
+            className="min-h-12 rounded-2xl bg-[#0E2E1C] px-2 text-sm font-extrabold text-[#7DFFB3] disabled:opacity-60"
+          >
+            🌱 뉴비 첫 채팅
+          </button>
+        </div>
+      </div>
+
       {toast ? (
         <div
           role="status"
-          className="fixed bottom-6 left-1/2 z-30 -translate-x-1/2 rounded-full bg-white px-5 py-3 text-base font-extrabold text-black"
+          className="fixed bottom-28 left-1/2 z-30 -translate-x-1/2 rounded-full bg-white px-5 py-3 text-base font-extrabold text-black"
         >
           {toast}
         </div>
