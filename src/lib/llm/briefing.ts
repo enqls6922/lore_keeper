@@ -3,17 +3,23 @@ import {
   SchemaType,
   type GenerationConfig,
 } from "@google/generative-ai";
-import type { Briefing, ChatLog, Viewer } from "@prisma/client";
+import type { Briefing, Viewer } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
 
 /** 브리핑을 만든 계기. 스키마의 triggerType 과 동일한 값만 허용한다. */
 export type BriefingTriggerType = "CHEESE" | "NEW_VIEWER" | "RETURNING";
 
+export interface BriefingRecentChat {
+  message: string;
+  cheeseAmount?: number;
+  createdAt?: Date;
+}
+
 export interface GenerateBriefingInput {
   viewer: Viewer;
-  /** 최근 채팅. 15개를 넘기면 시간순으로 마지막 15개만 사용한다. */
-  recentChats: Pick<ChatLog, "message" | "cheeseAmount" | "createdAt">[];
+  /** 최근 채팅. 15개를 넘기면 마지막 15개만 사용한다. 시각이 있으면 오래된 순으로 정렬한다. */
+  recentChats: BriefingRecentChat[];
   triggerType: BriefingTriggerType;
   triggerMessage: string;
   cheeseAmount: number;
@@ -119,20 +125,27 @@ async function saveBriefing(input: GenerateBriefingInput, draft: BriefingDraft):
   });
 }
 
-function formatChatLine(
-  chat: Pick<ChatLog, "message" | "cheeseAmount" | "createdAt">,
-): string {
-  const time = chat.createdAt.toLocaleString("ko-KR", { hour12: false });
-  if (chat.cheeseAmount > 0) {
-    return `- [${time}] ${chat.message} (치즈 ${chat.cheeseAmount})`;
+function formatChatLine(chat: BriefingRecentChat): string {
+  const time =
+    chat.createdAt instanceof Date ? `[${chat.createdAt.toLocaleString("ko-KR", { hour12: false })}] ` : "";
+  const cheese = chat.cheeseAmount !== undefined && chat.cheeseAmount > 0 ? ` (치즈 ${chat.cheeseAmount})` : "";
+  return `- ${time}${chat.message}${cheese}`;
+}
+
+function orderedRecentChats(chats: BriefingRecentChat[]): BriefingRecentChat[] {
+  const copy = [...chats];
+  if (copy.length > 0 && copy.every((chat) => chat.createdAt instanceof Date)) {
+    copy.sort((left, right) => {
+      const leftTime = left.createdAt instanceof Date ? left.createdAt.getTime() : 0;
+      const rightTime = right.createdAt instanceof Date ? right.createdAt.getTime() : 0;
+      return leftTime - rightTime;
+    });
   }
-  return `- [${time}] ${chat.message}`;
+  return copy.slice(-MAX_RECENT_CHATS);
 }
 
 function buildUserPrompt(input: GenerateBriefingInput): string {
-  const chats = [...input.recentChats]
-    .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime())
-    .slice(-MAX_RECENT_CHATS);
+  const chats = orderedRecentChats(input.recentChats);
 
   const chatBlock =
     chats.length > 0 ? chats.map(formatChatLine).join("\n") : "- (최근 채팅 없음)";

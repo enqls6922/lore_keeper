@@ -1,16 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   buildChzzkHandshake,
   buildChzzkPing,
   buildChzzkPong,
   CHZZK_CHAT_URL,
+  CHZZK_CMD_CHAT,
+  CHZZK_CMD_DONATION,
   CHZZK_PING_MS,
   parseChzzkFrame,
   type ChzzkInboundEvent,
 } from "@/lib/chzzk/frame";
+import { copyRecentChats, pushRecentChat } from "@/lib/chzzk/recent-chats";
 import type { ChzzkSession } from "@/lib/chzzk/session";
 
 export type ChzzkLinkStatus = "idle" | "connecting" | "live" | "offline" | "error";
@@ -61,18 +64,43 @@ async function loadSession(channelId: string, signal: AbortSignal): Promise<Chzz
   return payload;
 }
 
-async function postEvent(event: ChzzkInboundEvent): Promise<void> {
+async function postDonation(event: ChzzkInboundEvent, recentChats: string[]): Promise<void> {
   const response = await fetch("/api/events", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(event),
+    body: JSON.stringify({
+      userIdHash: event.userIdHash,
+      nickname: event.nickname,
+      message: event.message,
+      cheeseAmount: event.cheeseAmount,
+      recentChats,
+    }),
   });
   if (!response.ok) {
-    throw new Error("채팅 이벤트를 저장하지 못했습니다.");
+    throw new Error("후원 이벤트를 저장하지 못했습니다.");
   }
 }
 
-function waitForSocket(session: ChzzkSession, stopped: () => boolean): Promise<void> {
+function handleInbound(event: ChzzkInboundEvent, recentChats: Map<string, string[]>): void {
+  if (event.cmd === CHZZK_CMD_CHAT && event.cheeseAmount <= 0) {
+    pushRecentChat(recentChats, event.userIdHash, event.message);
+    return;
+  }
+  if (event.cmd !== CHZZK_CMD_DONATION && event.cheeseAmount <= 0) {
+    return;
+  }
+  const chats = copyRecentChats(recentChats, event.userIdHash);
+  void postDonation(event, chats).catch((error: unknown) => {
+    const text = error instanceof Error ? error.message : "후원 저장 실패";
+    console.error(`[치지직] ${text}`);
+  });
+}
+
+function waitForSocket(
+  session: ChzzkSession,
+  stopped: () => boolean,
+  recentChats: Map<string, string[]>,
+): Promise<void> {
   return new Promise((resolve) => {
     const socket = new WebSocket(CHZZK_CHAT_URL);
     let settled = false;
@@ -105,10 +133,7 @@ function waitForSocket(session: ChzzkSession, stopped: () => boolean): Promise<v
         socket.send(JSON.stringify(buildChzzkPong()));
       }
       for (const event of frame.events) {
-        void postEvent(event).catch((error: unknown) => {
-          const text = error instanceof Error ? error.message : "채팅 저장 실패";
-          console.error(`[치지직] ${text}`);
-        });
+        handleInbound(event, recentChats);
       }
     });
 
@@ -131,14 +156,17 @@ function waitForSocket(session: ChzzkSession, stopped: () => boolean): Promise<v
 }
 
 /**
- * 브라우저에서 치지직 채팅 소켓에 붙고, 채팅·후원을 /api/events 로 보낸다.
+ * 브라우저에서 치지직 채팅 소켓에 붙는다.
+ * 일반 채팅은 userIdHash별 최근 15개만 메모리에 두고, 치즈 후원일 때만 /api/events 로 보낸다.
  * enabled 가 꺼지면 소켓과 20초 핑을 정리한다.
  */
 export function useChzzkChat(channelId: string, enabled: boolean): ChzzkChatState {
   const [state, setState] = useState<ChzzkChatState>(IDLE_STATE);
+  const recentChatsRef = useRef<Map<string, string[]>>(new Map());
 
   useEffect(() => {
     const trimmed = channelId.trim();
+    recentChatsRef.current.clear();
     if (!enabled || trimmed.length === 0) {
       return;
     }
@@ -155,7 +183,7 @@ export function useChzzkChat(channelId: string, enabled: boolean): ChzzkChatStat
           return;
         }
         setState({ status: "live", liveTitle: session.liveTitle, errorMessage: null });
-        await waitForSocket(session, () => stopped);
+        await waitForSocket(session, () => stopped, recentChatsRef.current);
         if (stopped) {
           return;
         }

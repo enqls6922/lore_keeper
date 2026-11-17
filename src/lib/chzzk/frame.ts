@@ -6,11 +6,12 @@ export const CHZZK_PING_MS = 20_000;
 const CMD_CONNECT = 100;
 const CMD_PING = 0;
 const CMD_PONG = 10000;
-const CMD_CHAT = 93101;
-const CMD_DONATION = 93102;
+export const CHZZK_CMD_CHAT = 93101;
+export const CHZZK_CMD_DONATION = 93102;
 const MSG_DONATION = 10;
 
 export interface ChzzkInboundEvent {
+  cmd: typeof CHZZK_CMD_CHAT | typeof CHZZK_CMD_DONATION;
   userIdHash: string;
   nickname: string;
   message: string;
@@ -125,7 +126,10 @@ function readRows(body: unknown): Record<string, unknown>[] {
   return [];
 }
 
-function readEvent(row: Record<string, unknown>, donationCommand: boolean): ChzzkInboundEvent | null {
+function readEvent(
+  row: Record<string, unknown>,
+  cmd: typeof CHZZK_CMD_CHAT | typeof CHZZK_CMD_DONATION,
+): ChzzkInboundEvent | null {
   const status = readString(row.msgStatusType) ?? readString(row.messageStatusType);
   if (status === "HIDDEN") {
     return null;
@@ -144,16 +148,21 @@ function readEvent(row: Record<string, unknown>, donationCommand: boolean): Chzz
     "시청자";
   const message = (typeof row.msg === "string" ? row.msg : null) ?? (typeof row.content === "string" ? row.content : "") ?? "";
   const messageType = readInteger(row.msgTypeCode) ?? readInteger(row.messageTypeCode);
-  const isDonation = donationCommand || messageType === MSG_DONATION;
+  const isDonation = cmd === CHZZK_CMD_DONATION || messageType === MSG_DONATION;
   const payAmount = extras ? readInteger(extras.payAmount) : null;
   const cheeseAmount = isDonation && payAmount !== null && payAmount > 0 ? payAmount : 0;
 
   return {
+    cmd,
     userIdHash,
     nickname,
     message,
     cheeseAmount,
   };
+}
+
+function isInboundCommand(cmd: number): cmd is typeof CHZZK_CMD_CHAT | typeof CHZZK_CMD_DONATION {
+  return cmd === CHZZK_CMD_CHAT || cmd === CHZZK_CMD_DONATION;
 }
 
 /** 텍스트 프레임을 이벤트로 바꾼다. 서버 핑(cmd 0)이면 퐁이 필요하다. */
@@ -170,12 +179,13 @@ export function parseChzzkFrame(raw: string): ParsedChzzkFrame {
   if (payload.cmd === CMD_PING) {
     return { events: [], shouldPong: true };
   }
-  if (payload.cmd !== CMD_CHAT && payload.cmd !== CMD_DONATION) {
+  if (!isInboundCommand(payload.cmd)) {
     return { events: [], shouldPong: false };
   }
 
+  const cmd = payload.cmd;
   const events = readRows(payload.bdy)
-    .map((row) => readEvent(row, payload.cmd === CMD_DONATION))
+    .map((row) => readEvent(row, cmd))
     .filter((event): event is ChzzkInboundEvent => event !== null);
 
   return { events, shouldPong: false };
