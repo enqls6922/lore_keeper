@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { isAnonymousDonor } from "@/lib/anonymous";
 import {
   buildChzzkHandshake,
   buildChzzkPing,
@@ -85,6 +86,22 @@ function handleInbound(
   sentFirstChats: Set<string>,
   enableFirstChat: () => boolean,
 ): void {
+  if (isAnonymousDonor(event.userIdHash, event.nickname)) {
+    if (event.cheeseAmount <= 0) {
+      return;
+    }
+    void postEvent(event, [])
+      .then((ok) => {
+        if (!ok) {
+          console.error("[치지직] 익명 후원을 저장하지 못했습니다.");
+        }
+      })
+      .catch((error: unknown) => {
+        const text = error instanceof Error ? error.message : "익명 후원 저장 실패";
+        console.error(`[치지직] ${text}`);
+      });
+    return;
+  }
   if (event.cmd === CHZZK_CMD_CHAT && event.cheeseAmount <= 0) {
     pushRecentChat(recentChats, event.userIdHash, event.message);
     if (!enableFirstChat() || sentFirstChats.has(event.userIdHash)) {

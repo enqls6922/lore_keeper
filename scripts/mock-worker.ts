@@ -177,7 +177,15 @@ async function simulateOnce(): Promise<void> {
   }
 
   const briefing = await generateBriefing({
-    viewer,
+    person: {
+      userId: viewer.userId,
+      viewerId: viewer.id,
+      nickname: viewer.nickname,
+      totalCheese: viewer.totalCheese,
+      visitCount: viewer.visitCount,
+      aiSummary: viewer.aiSummary,
+      isAnonymous: false,
+    },
     recentChats: (recentByHash.get(viewer.userIdHash) ?? []).map((message) => ({ message })),
     triggerType,
     triggerMessage: event.message,

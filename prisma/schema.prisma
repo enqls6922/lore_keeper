@@ -43,8 +43,8 @@ model Briefing {
   id               String   @id @default(cuid())
   userId           String
   user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  viewerId         String
-  viewer           Viewer   @relation(fields: [viewerId], references: [id], onDelete: Cascade)
+  viewerId         String? // 익명 후원은 시청자와 연결하지 않는다
+  viewer           Viewer?  @relation(fields: [viewerId], references: [id], onDelete: Cascade)
   triggerType      String // "CHEESE" | "NEW_VIEWER" | "RETURNING"
   triggerMessage   String
   cheeseAmount     Int      @default(0)
