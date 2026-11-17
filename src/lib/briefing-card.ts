@@ -74,10 +74,24 @@ export function isBriefingCardList(value: unknown): value is BriefingCard[] {
   return Array.isArray(value) && value.every(isBriefingCard);
 }
 
-/** 고정 카드가 위, 그 안에서는 최신 생성이 위. */
+function briefingRank(card: BriefingCard): number {
+  if (card.isPinned && !card.isDone) {
+    return 0;
+  }
+  if (card.isPinned) {
+    return 1;
+  }
+  if (!card.isDone) {
+    return 2;
+  }
+  return 3;
+}
+
+/** 고정이 위, 그다음 미완료 최신순, 완료는 맨 아래. */
 export function compareBriefingCards(left: BriefingCard, right: BriefingCard): number {
-  if (left.isPinned !== right.isPinned) {
-    return left.isPinned ? -1 : 1;
+  const rank = briefingRank(left) - briefingRank(right);
+  if (rank !== 0) {
+    return rank;
   }
   return right.createdAt.localeCompare(left.createdAt);
 }

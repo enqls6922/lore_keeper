@@ -1,3 +1,5 @@
+import { Prisma } from "@prisma/client";
+import type { User, Viewer } from "@prisma/client";
 import { connection } from "next/server";
 
 import { requireUser, unauthorizedResponse } from "@/lib/auth/current-user";
@@ -19,6 +21,8 @@ interface ChatEventInput {
   forceBriefing: boolean;
 }
 
+export type EventSkipReason = "first-chat-off" | "known-viewer" | "below-minimum";
+
 export interface ChatEventResponse {
   triggerType: BriefingTriggerType | null;
   briefing: BriefingCard | null;
@@ -27,6 +31,7 @@ export interface ChatEventResponse {
     totalCheese: number;
     visitCount: number;
   } | null;
+  skipReason: EventSkipReason | null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -102,7 +107,59 @@ function readEventInput(value: unknown): ChatEventInput | null {
   };
 }
 
-/** 치즈 후원이나 강제 브리핑만 저장한다. 일반 채팅은 브라우저에 있으므로 DB에 쓰지 않는다. */
+function viewerSnapshot(viewer: Pick<Viewer, "nickname" | "totalCheese" | "visitCount">): ChatEventResponse["viewer"] {
+  return {
+    nickname: viewer.nickname,
+    totalCheese: viewer.totalCheese,
+    visitCount: viewer.visitCount,
+  };
+}
+
+function skipped(skipReason: EventSkipReason, viewer: ChatEventResponse["viewer"] = null): Response {
+  const body: ChatEventResponse = { triggerType: null, briefing: null, viewer, skipReason };
+  return Response.json(body, { headers: NO_STORE });
+}
+
+function isUniqueConflict(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
+}
+
+async function publishBriefing(
+  user: User,
+  viewer: Viewer,
+  input: ChatEventInput,
+  isNew: boolean,
+): Promise<Response> {
+  const triggerType = resolveTriggerType(input.cheeseAmount, isNew);
+  const briefing = await generateBriefing({
+    viewer,
+    recentChats: input.recentChats.map((message) => ({ message })),
+    triggerType,
+    triggerMessage: input.message,
+    cheeseAmount: input.cheeseAmount,
+    streamTone: user.streamTone,
+    streamContext: user.streamContext,
+  });
+  const card = briefing
+    ? toBriefingCard(
+        await prisma.briefing.findUniqueOrThrow({
+          where: { id: briefing.id },
+          include: briefingInclude,
+        }),
+      )
+    : null;
+  const body: ChatEventResponse = {
+    triggerType: card ? triggerType : null,
+    briefing: card,
+    viewer: card ? card.viewer : viewerSnapshot(viewer),
+    skipReason: null,
+  };
+  return Response.json(body, { headers: NO_STORE });
+}
+
+/**
+ * 후원은 항상 누적한다. 브리핑은 최소 치즈 이상이거나, 첫 채팅 설정이 켜진 신규 시청자일 때만 만든다.
+ */
 export async function POST(request: Request): Promise<Response> {
   await connection();
 
@@ -120,18 +177,46 @@ export async function POST(request: Request): Promise<Response> {
       return unauthorizedResponse();
     }
 
-    if (input.cheeseAmount <= 0 && !input.forceBriefing) {
-      const skipped: ChatEventResponse = { triggerType: null, briefing: null, viewer: null };
-      return Response.json(skipped, { headers: NO_STORE });
-    }
-
     const now = new Date();
     const viewerKey = { userId: user.id, userIdHash: input.userIdHash };
-    const previous = await prisma.viewer.findUnique({
-      where: { userId_userIdHash: viewerKey },
-      select: { id: true },
-    });
-    const isNew = previous === null;
+
+    if (input.cheeseAmount <= 0) {
+      if (!input.forceBriefing && !user.enableFirstChat) {
+        return skipped("first-chat-off");
+      }
+
+      const previous = await prisma.viewer.findUnique({ where: { userId_userIdHash: viewerKey } });
+      if (!previous) {
+        try {
+          const created = await prisma.viewer.create({
+            data: {
+              userId: user.id,
+              userIdHash: input.userIdHash,
+              nickname: input.nickname,
+              totalCheese: 0,
+              visitCount: 1,
+              lastSeenAt: now,
+            },
+          });
+          return await publishBriefing(user, created, input, true);
+        } catch (error: unknown) {
+          if (isUniqueConflict(error)) {
+            return skipped("known-viewer");
+          }
+          throw error;
+        }
+      }
+
+      if (!input.forceBriefing) {
+        return skipped("known-viewer");
+      }
+
+      const touched = await prisma.viewer.update({
+        where: { id: previous.id },
+        data: { nickname: input.nickname, lastSeenAt: now },
+      });
+      return await publishBriefing(user, touched, input, false);
+    }
 
     const viewer = await prisma.viewer.upsert({
       where: { userId_userIdHash: viewerKey },
@@ -151,39 +236,11 @@ export async function POST(request: Request): Promise<Response> {
       },
     });
 
-    const triggerType: BriefingTriggerType = resolveTriggerType(input.cheeseAmount, isNew);
+    if (!input.forceBriefing && input.cheeseAmount < user.minCheeseAmount) {
+      return skipped("below-minimum", viewerSnapshot(viewer));
+    }
 
-    const briefing = await generateBriefing({
-      viewer,
-      recentChats: input.recentChats.map((message) => ({ message })),
-      triggerType,
-      triggerMessage: input.message,
-      cheeseAmount: input.cheeseAmount,
-    });
-
-    const card = briefing
-      ? toBriefingCard(
-          await prisma.briefing.findUniqueOrThrow({
-            where: { id: briefing.id },
-            include: briefingInclude,
-          }),
-        )
-      : null;
-
-    const freshViewer = card
-      ? card.viewer
-      : {
-          nickname: viewer.nickname,
-          totalCheese: viewer.totalCheese,
-          visitCount: viewer.visitCount,
-        };
-
-    const body: ChatEventResponse = {
-      triggerType,
-      briefing: card,
-      viewer: freshViewer,
-    };
-    return Response.json(body, { headers: NO_STORE });
+    return await publishBriefing(user, viewer, input, false);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "이벤트를 저장하지 못했습니다.";
     console.error(`[POST /api/events] ${message}`);

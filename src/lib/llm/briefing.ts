@@ -23,6 +23,8 @@ export interface GenerateBriefingInput {
   triggerType: BriefingTriggerType;
   triggerMessage: string;
   cheeseAmount: number;
+  streamTone: string;
+  streamContext: string | null;
 }
 
 interface BriefingDraft {
@@ -33,14 +35,17 @@ interface BriefingDraft {
 const MODEL_NAME = "gemini-2.5-flash-lite";
 const MAX_RECENT_CHATS = 15;
 
+const SUMMARY_LIMIT = 30;
+
 const SYSTEM_PROMPT = `너는 한국어 버튜버·인터넷 방송 전문 방송 작가야.
 스트리머가 생방송 중에 화면을 힐끗 보고 바로 읽을 수 있는 브리핑을 작성한다.
 
 반드시 지킬 규칙:
-- summary는 시청자 상황을 담은 한국어 한 줄이다.
+- summary는 공백 포함 30자 이내의 개조식이다. 문장은 "~함" 또는 "~임"으로 끝낸다.
 - 누적 치즈액, 이번 후원액, 방문 횟수처럼 숫자로 된 사실은 사용자가 넘긴 [사실 데이터]에 적힌 값만 쓴다. 데이터에 없는 숫자, 금액, 횟수는 절대 만들지 않는다.
 - 이전 요약 문장과 사실 데이터의 숫자가 다르면 사실 데이터의 숫자를 따른다.
-- suggestedReplies는 스트리머가 마이크에 대고 바로 받아칠 수 있는 센스 있는 한국어 멘트 정확히 2개다.
+- 방송 컨셉 메모는 말투와 호칭에만 반영한다. 메모에 없는 사건이나 숫자를 사실처럼 쓰지 않는다.
+- suggestedReplies는 스트리머가 마이크에 대고 바로 받아칠 구어체 멘트 정확히 2개다. [방송 말투]를 그대로 따른다.
 - 마크다운, 코드 블록, 머리말, 부연 설명은 넣지 않는다.`;
 
 const generationConfig: GenerationConfig = {
@@ -50,7 +55,7 @@ const generationConfig: GenerationConfig = {
     properties: {
       summary: {
         type: SchemaType.STRING,
-        description: "사실 데이터만으로 만든 시청자 한 줄 요약",
+        description: "공백 포함 30자 이내 개조식 요약. ~함 또는 ~임으로 끝낸다",
       },
       suggestedReplies: {
         type: SchemaType.ARRAY,
@@ -75,33 +80,66 @@ function formatFact(value: number): string {
   return value.toLocaleString("ko-KR");
 }
 
-/** 모델이 없을 때도 사실 데이터에 있는 숫자만 써서 카드를 만든다. */
+function charCount(text: string): number {
+  return Array.from(text).length;
+}
+
+/** 개조식 한 줄. 30자를 넘기면 뒤의 누적 정보는 뺀다. */
+function joinFacts(lead: string, detail: string): string {
+  const combined = `${lead}, ${detail}`;
+  if (charCount(combined) <= SUMMARY_LIMIT) {
+    return combined;
+  }
+  if (charCount(lead) <= SUMMARY_LIMIT) {
+    return lead;
+  }
+  return Array.from(lead).slice(0, SUMMARY_LIMIT).join("");
+}
+
+function repliesForTone(tone: string, lines: Record<string, [string, string]>): [string, string] {
+  return lines[tone] ?? lines["친근한 반말"];
+}
+
+/** 모델이 없을 때도 사실 데이터에 있는 숫자만 써서 30자 개조식으로 만든다. */
 function buildFactualDraft(input: GenerateBriefingInput): BriefingDraft {
   const nickname = input.viewer.nickname;
   const cheeseAmount = formatFact(input.cheeseAmount);
   const totalCheese = formatFact(input.viewer.totalCheese);
   const visitCount = formatFact(input.viewer.visitCount);
+  const tone = input.streamTone;
 
   if (input.triggerType === "CHEESE") {
     return {
-      summary: `${nickname}님이 치즈 ${cheeseAmount}개를 보냈습니다. 누적 ${totalCheese}개, 방문 ${visitCount}회.`,
-      suggestedReplies: [
-        `${nickname} 치즈 ${cheeseAmount}개 고마워`,
-        `누적 ${totalCheese}개, 방문 ${visitCount}회째네`,
-      ],
+      summary: joinFacts(`${cheeseAmount}치즈 후원함`, `누적 ${totalCheese}임`),
+      suggestedReplies: repliesForTone(tone, {
+        "친근한 반말": [`${nickname} 치즈 ${cheeseAmount}개 고마워`, `누적 ${totalCheese}개네`],
+        "정중한 존댓말": [`${nickname} 님, 치즈 ${cheeseAmount}개 감사합니다`, `누적 ${totalCheese}개입니다`],
+        "텐션 높은 리액션": [`${nickname} 치즈 ${cheeseAmount}개?! 대박`, `누적 ${totalCheese}개 실화야`],
+        "담백한 진행": [`${nickname}, 치즈 ${cheeseAmount}개 확인했어`, `누적은 ${totalCheese}개야`],
+      }),
     };
   }
 
   if (input.triggerType === "NEW_VIEWER") {
     return {
-      summary: `${nickname}님이 처음 채팅을 남겼습니다. 방문 ${visitCount}회.`,
-      suggestedReplies: [`${nickname} 첫 방문 환영해`, `방문 ${visitCount}회, 오늘 처음이구나`],
+      summary: joinFacts("첫 채팅임", `방문 ${visitCount}회임`),
+      suggestedReplies: repliesForTone(tone, {
+        "친근한 반말": [`${nickname} 첫 방문 환영해`, "오늘 처음이지"],
+        "정중한 존댓말": [`${nickname} 님, 첫 방문 환영합니다`, "오늘 처음이시죠"],
+        "텐션 높은 리액션": [`${nickname} 첫 방문?! 환영해`, "오늘 처음 온 거야"],
+        "담백한 진행": [`${nickname}, 첫 방문이네`, "오늘 처음 온 거야"],
+      }),
     };
   }
 
   return {
-    summary: `${nickname}님이 다시 찾았습니다. 누적 치즈 ${totalCheese}개, 방문 ${visitCount}회.`,
-    suggestedReplies: [`${nickname} 또 와 줘서 반가워`, `누적 ${totalCheese}개, 방문 ${visitCount}회째네`],
+    summary: joinFacts("다시 방문함", `누적 ${totalCheese}임`),
+    suggestedReplies: repliesForTone(tone, {
+      "친근한 반말": [`${nickname} 또 와 줘서 고마워`, `누적 ${totalCheese}개네`],
+      "정중한 존댓말": [`${nickname} 님, 다시 와 주셔서 감사합니다`, `누적 ${totalCheese}개입니다`],
+      "텐션 높은 리액션": [`${nickname} 또 왔다! 반가워`, `누적 ${totalCheese}개 실화야`],
+      "담백한 진행": [`${nickname}, 다시 왔네`, `누적은 ${totalCheese}개야`],
+    }),
   };
 }
 
@@ -152,8 +190,15 @@ function buildUserPrompt(input: GenerateBriefingInput): string {
     chats.length > 0 ? chats.map(formatChatLine).join("\n") : "- (최근 채팅 없음)";
 
   const previousSummary = input.viewer.aiSummary?.trim() || "없음";
+  const context = input.streamContext?.trim() || "없음";
 
-  return `[사실 데이터]
+  return `[방송 말투]
+${input.streamTone}
+
+[방송 컨셉 메모]
+${context}
+
+[사실 데이터]
 닉네임: ${input.viewer.nickname}
 누적 치즈: ${input.viewer.totalCheese}
 방문 횟수: ${input.viewer.visitCount}
@@ -179,6 +224,9 @@ function parseDraft(raw: string): BriefingDraft {
   const { summary, suggestedReplies } = parsed;
   if (typeof summary !== "string" || summary.trim().length === 0) {
     throw new Error("LLM 응답의 summary가 비어 있습니다.");
+  }
+  if (charCount(summary.trim()) > SUMMARY_LIMIT) {
+    throw new Error("LLM 응답의 summary가 30자를 넘습니다.");
   }
   if (!Array.isArray(suggestedReplies)) {
     throw new Error("LLM 응답의 suggestedReplies가 배열이 아닙니다.");

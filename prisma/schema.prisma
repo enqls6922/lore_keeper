@@ -11,9 +11,13 @@ datasource db {
 model User {
   id             String     @id // Supabase Auth UUID
   email          String     @unique
-  chzzkChannelId String?
-  plan           String     @default("FREE")
-  aiCredits      Int        @default(50)
+  chzzkChannelId  String?
+  plan            String     @default("FREE")
+  aiCredits       Int        @default(50)
+  minCheeseAmount Int        @default(1000) // 이 금액 미만 후원은 누적만 하고 브리핑하지 않는다
+  enableFirstChat Boolean    @default(false) // 처음 등록된 시청자의 첫 채팅만 브리핑한다
+  streamTone      String     @default("친근한 반말")
+  streamContext   String? // 방송 컨셉 메모
   createdAt      DateTime   @default(now())
   viewers        Viewer[]
   briefings      Briefing[]

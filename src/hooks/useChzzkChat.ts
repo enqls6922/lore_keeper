@@ -64,7 +64,7 @@ async function loadSession(channelId: string, signal: AbortSignal): Promise<Chzz
   return payload;
 }
 
-async function postDonation(event: ChzzkInboundEvent, recentChats: string[]): Promise<void> {
+async function postEvent(event: ChzzkInboundEvent, recentChats: string[]): Promise<boolean> {
   const response = await fetch("/api/events", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -76,30 +76,57 @@ async function postDonation(event: ChzzkInboundEvent, recentChats: string[]): Pr
       recentChats,
     }),
   });
-  if (!response.ok) {
-    throw new Error("후원 이벤트를 저장하지 못했습니다.");
-  }
+  return response.ok;
 }
 
-function handleInbound(event: ChzzkInboundEvent, recentChats: Map<string, string[]>): void {
+function handleInbound(
+  event: ChzzkInboundEvent,
+  recentChats: Map<string, string[]>,
+  sentFirstChats: Set<string>,
+  enableFirstChat: () => boolean,
+): void {
   if (event.cmd === CHZZK_CMD_CHAT && event.cheeseAmount <= 0) {
     pushRecentChat(recentChats, event.userIdHash, event.message);
+    if (!enableFirstChat() || sentFirstChats.has(event.userIdHash)) {
+      return;
+    }
+    sentFirstChats.add(event.userIdHash);
+    const chats = copyRecentChats(recentChats, event.userIdHash);
+    void postEvent(event, chats)
+      .then((ok) => {
+        if (!ok) {
+          sentFirstChats.delete(event.userIdHash);
+        }
+      })
+      .catch((error: unknown) => {
+        sentFirstChats.delete(event.userIdHash);
+        const text = error instanceof Error ? error.message : "첫 채팅 저장 실패";
+        console.error(`[치지직] ${text}`);
+      });
     return;
   }
   if (event.cmd !== CHZZK_CMD_DONATION && event.cheeseAmount <= 0) {
     return;
   }
   const chats = copyRecentChats(recentChats, event.userIdHash);
-  void postDonation(event, chats).catch((error: unknown) => {
-    const text = error instanceof Error ? error.message : "후원 저장 실패";
-    console.error(`[치지직] ${text}`);
-  });
+  void postEvent(event, chats)
+    .then((ok) => {
+      if (!ok) {
+        console.error("[치지직] 후원 이벤트를 저장하지 못했습니다.");
+      }
+    })
+    .catch((error: unknown) => {
+      const text = error instanceof Error ? error.message : "후원 저장 실패";
+      console.error(`[치지직] ${text}`);
+    });
 }
 
 function waitForSocket(
   session: ChzzkSession,
   stopped: () => boolean,
   recentChats: Map<string, string[]>,
+  sentFirstChats: Set<string>,
+  enableFirstChat: () => boolean,
 ): Promise<void> {
   return new Promise((resolve) => {
     const socket = new WebSocket(CHZZK_CHAT_URL);
@@ -133,7 +160,7 @@ function waitForSocket(
         socket.send(JSON.stringify(buildChzzkPong()));
       }
       for (const event of frame.events) {
-        handleInbound(event, recentChats);
+        handleInbound(event, recentChats, sentFirstChats, enableFirstChat);
       }
     });
 
@@ -157,16 +184,21 @@ function waitForSocket(
 
 /**
  * 브라우저에서 치지직 채팅 소켓에 붙는다.
- * 일반 채팅은 userIdHash별 최근 15개만 메모리에 두고, 치즈 후원일 때만 /api/events 로 보낸다.
+ * 일반 채팅은 userIdHash별 최근 15개만 메모리에 둔다.
+ * 첫 채팅 브리핑이 켜져 있으면 시청자당 한 번만 서버에 묻고, 치즈 후원은 항상 보낸다.
  * enabled 가 꺼지면 소켓과 20초 핑을 정리한다.
  */
-export function useChzzkChat(channelId: string, enabled: boolean): ChzzkChatState {
+export function useChzzkChat(channelId: string, enabled: boolean, enableFirstChat: boolean): ChzzkChatState {
   const [state, setState] = useState<ChzzkChatState>(IDLE_STATE);
   const recentChatsRef = useRef<Map<string, string[]>>(new Map());
+  const sentFirstRef = useRef<Set<string>>(new Set());
+  const firstChatRef = useRef(enableFirstChat);
+  firstChatRef.current = enableFirstChat;
 
   useEffect(() => {
     const trimmed = channelId.trim();
     recentChatsRef.current.clear();
+    sentFirstRef.current.clear();
     if (!enabled || trimmed.length === 0) {
       return;
     }
@@ -183,7 +215,13 @@ export function useChzzkChat(channelId: string, enabled: boolean): ChzzkChatStat
           return;
         }
         setState({ status: "live", liveTitle: session.liveTitle, errorMessage: null });
-        await waitForSocket(session, () => stopped, recentChatsRef.current);
+        await waitForSocket(
+          session,
+          () => stopped,
+          recentChatsRef.current,
+          sentFirstRef.current,
+          () => firstChatRef.current,
+        );
         if (stopped) {
           return;
         }
