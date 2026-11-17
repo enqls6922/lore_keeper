@@ -1,5 +1,7 @@
 /** 치지직 채팅 프레임에서 저장할 이벤트만 고른다. 금액은 payAmount 정수만 쓴다. */
 
+import { ANONYMOUS_NICKNAME, isAnonymousDonor } from "@/lib/anonymous";
+
 export const CHZZK_CHAT_URL = "wss://kr-ss1.chat.naver.com/chat";
 export const CHZZK_PING_MS = 20_000;
 
@@ -137,15 +139,15 @@ function readEvent(
 
   const profile = readProfile(row.profile);
   const extras = readExtras(row.extras);
-  const userIdHash = (profile ? readString(profile.userIdHash) : null) ?? readString(row.uid);
-  if (!userIdHash) {
+  const userIdHash = (profile ? readString(profile.userIdHash) : null) ?? readString(row.uid) ?? "";
+  const nicknameRaw =
+    (profile ? readString(profile.nickname) : null) ?? (extras ? readString(extras.nickname) : null) ?? "";
+  const anonymous = isAnonymousDonor(userIdHash, nicknameRaw);
+  if (!anonymous && userIdHash.length === 0) {
     return null;
   }
 
-  const nickname =
-    (profile ? readString(profile.nickname) : null) ??
-    (extras ? readString(extras.nickname) : null) ??
-    "시청자";
+  const nickname = anonymous ? ANONYMOUS_NICKNAME : nicknameRaw || "시청자";
   const message = (typeof row.msg === "string" ? row.msg : null) ?? (typeof row.content === "string" ? row.content : "") ?? "";
   const messageType = readInteger(row.msgTypeCode) ?? readInteger(row.messageTypeCode);
   const isDonation = cmd === CHZZK_CMD_DONATION || messageType === MSG_DONATION;

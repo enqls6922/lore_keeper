@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useChzzkChat } from "@/hooks/useChzzkChat";
+import { ANONYMOUS_NICKNAME } from "@/lib/anonymous";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import {
   compareBriefingCards,
@@ -43,20 +44,32 @@ function formatCount(value: number): string {
   return value.toLocaleString("ko-KR");
 }
 
-function loyaltyLabel(visitCount: number): string {
-  if (visitCount <= 1) {
-    return "첫 방문";
+function loyaltyLabel(card: BriefingCard): string {
+  if (card.isAnonymous || !card.viewer) {
+    return "익명";
   }
-  return `단골 ${formatCount(visitCount)}회`;
+  if (card.viewer.visitCount <= 1) {
+    return "첫후원";
+  }
+  return "단골";
 }
 
-type SkipReason = "first-chat-off" | "known-viewer" | "below-minimum";
+function cardName(card: BriefingCard): string {
+  return card.isAnonymous || !card.viewer ? ANONYMOUS_NICKNAME : card.viewer.nickname;
+}
+
+type SkipReason = "first-chat-off" | "known-viewer" | "below-minimum" | "anonymous-chat";
 
 function readSkipReason(value: unknown): SkipReason | null {
   if (!isRecord(value)) {
     return null;
   }
-  if (value.skipReason === "first-chat-off" || value.skipReason === "known-viewer" || value.skipReason === "below-minimum") {
+  if (
+    value.skipReason === "first-chat-off" ||
+    value.skipReason === "known-viewer" ||
+    value.skipReason === "below-minimum" ||
+    value.skipReason === "anonymous-chat"
+  ) {
     return value.skipReason;
   }
   return null;
@@ -426,6 +439,10 @@ export default function HomePage() {
         showToast("최소 치즈보다 작아 누적만 반영했습니다.");
         return;
       }
+      if (skipReason === "anonymous-chat") {
+        showToast("익명 채팅은 브리핑하지 않습니다.");
+        return;
+      }
       showToast("브리핑을 만들지 못했습니다.");
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "시뮬레이터 전송 실패";
@@ -452,11 +469,11 @@ export default function HomePage() {
         ? "연결하는 중"
         : "브리핑 연결이 끊겼습니다";
   const statusLive = chatEnabled ? chat.status === "live" : pollStatus === "live";
-  const statusDot = statusLive ? "bg-[#3DDC97]" : statusText.includes("중") ? "bg-[#8B93A7]" : "bg-[#FF5C5C]";
+  const statusDot = statusLive ? "bg-[#00FFA3]" : statusText.includes("중") ? "bg-[#8B93A7]" : "bg-[#FF5C5C]";
 
   return (
-    <div className="mx-auto flex min-h-full w-full max-w-[430px] flex-col bg-black text-white">
-      <header className="sticky top-0 z-20 border-b border-white/10 bg-black px-4 pb-3 pt-4">
+    <div className="mx-auto flex min-h-full w-full max-w-[430px] flex-col bg-[#0E0F11] text-white">
+      <header className="sticky top-0 z-20 border-b border-white/10 bg-[#0E0F11] px-4 pb-3 pt-4">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
             <h1 className="text-[1.65rem] font-extrabold tracking-tight">LoreKeeper</h1>
@@ -469,8 +486,8 @@ export default function HomePage() {
                 void toggleWake();
               }}
               disabled={!wakeSupported}
-              className={`min-h-12 rounded-full px-3 text-sm font-bold ${
-                wakeOn ? "bg-[#143226] text-[#B6FFD8]" : "bg-[#14171F] text-white"
+              className={`min-h-12 rounded-full border border-white/10 px-3 text-sm font-bold ${
+                wakeOn ? "bg-[#00FFA3] text-[#090A0B]" : "bg-[#16181C] text-white"
               } disabled:text-[#8B93A7]`}
             >
               {wakeSupported ? (wakeOn ? "화면 유지 중" : "화면 켜 두기") : "화면 유지 불가"}
@@ -480,7 +497,7 @@ export default function HomePage() {
               onClick={() => {
                 void logout();
               }}
-              className="min-h-12 rounded-full bg-[#14171F] px-3 text-sm font-bold text-white"
+              className="min-h-12 rounded-full border border-white/10 bg-[#16181C] px-3 text-sm font-bold text-white"
             >
               로그아웃
             </button>
@@ -493,8 +510,8 @@ export default function HomePage() {
           onClick={() => {
             setChatEnabled((current) => !current);
           }}
-          className={`mt-3 min-h-12 w-full rounded-2xl text-base font-extrabold disabled:text-[#8B93A7] ${
-            chatEnabled ? "bg-[#3A1214] text-[#FFB4B4]" : "bg-white text-black"
+          className={`mt-3 min-h-12 w-full rounded-2xl text-base font-extrabold disabled:bg-[#16181C] disabled:text-[#8B93A7] ${
+            chatEnabled ? "border border-white/10 bg-[#16181C] text-white" : "bg-[#00FFA3] text-[#090A0B]"
           }`}
         >
           {chatEnabled ? "연결 끊기" : "실시간 연결"}
@@ -507,7 +524,7 @@ export default function HomePage() {
             settingsTouched.current = true;
             setSettingsOpen((current) => !current);
           }}
-          className="mt-2 min-h-12 w-full rounded-2xl bg-[#14171F] text-base font-extrabold text-white"
+          className="mt-2 min-h-12 w-full rounded-2xl border border-white/10 bg-[#16181C] text-base font-extrabold text-white"
         >
           {settingsOpen ? "설정 접기" : "설정 펼치기"}
         </button>
@@ -525,7 +542,7 @@ export default function HomePage() {
       <main className="flex flex-1 flex-col gap-3 px-4 py-4 pb-36">
         {settingsOpen ? (
           <form
-            className="rounded-[22px] bg-[#14171F] px-4 py-4"
+            className="rounded-[22px] border border-white/10 bg-[#16181C] px-4 py-4"
             onSubmit={(event) => {
               event.preventDefault();
               void saveSettings();
@@ -544,7 +561,7 @@ export default function HomePage() {
                 autoCapitalize="off"
                 autoCorrect="off"
                 spellCheck={false}
-                className="mt-1 min-h-12 w-full rounded-2xl bg-black px-4 text-base font-semibold text-white outline-none placeholder:text-[#6E768A]"
+                className="mt-1 min-h-12 w-full rounded-2xl border border-white/10 bg-[#0E0F11] px-4 text-base font-semibold text-white outline-none placeholder:text-[#6E768A]"
               />
             </label>
 
@@ -557,7 +574,7 @@ export default function HomePage() {
                   setEnableFirstChat((current) => !current);
                 }}
                 className={`min-h-12 rounded-full px-4 text-sm font-extrabold ${
-                  enableFirstChat ? "bg-[#143226] text-[#B6FFD8]" : "bg-black text-[#D7DDEA]"
+                  enableFirstChat ? "bg-[#00FFA3] text-[#090A0B]" : "border border-white/10 bg-[#0E0F11] text-[#D7DDEA]"
                 }`}
               >
                 {enableFirstChat ? "켜짐" : "꺼짐"}
@@ -575,7 +592,9 @@ export default function HomePage() {
                     setMinCheeseAmount(preset);
                   }}
                   className={`min-h-12 rounded-2xl text-sm font-extrabold ${
-                    minCheeseAmount === preset ? "bg-white text-black" : "bg-black text-[#D7DDEA]"
+                    minCheeseAmount === preset
+                      ? "bg-[#00FFA3] text-[#090A0B]"
+                      : "border border-white/10 bg-[#0E0F11] text-[#D7DDEA]"
                   }`}
                 >
                   {formatCount(preset)}원
@@ -593,7 +612,7 @@ export default function HomePage() {
                     setStreamTone(event.target.value);
                   }
                 }}
-                className="mt-1 min-h-12 w-full rounded-2xl bg-black px-4 text-base font-semibold text-white outline-none"
+                className="mt-1 min-h-12 w-full rounded-2xl border border-white/10 bg-[#0E0F11] px-4 text-base font-semibold text-white outline-none"
               >
                 {STREAM_TONES.map((tone) => (
                   <option key={tone} value={tone}>
@@ -614,21 +633,21 @@ export default function HomePage() {
                 }}
                 placeholder="오늘 콘셉트, 호칭, 피하고 싶은 말"
                 rows={3}
-                className="mt-1 w-full rounded-2xl bg-black px-4 py-3 text-base font-semibold leading-6 text-white outline-none placeholder:text-[#6E768A]"
+                className="mt-1 w-full rounded-2xl border border-white/10 bg-[#0E0F11] px-4 py-3 text-base font-semibold leading-6 text-white outline-none placeholder:text-[#6E768A]"
               />
             </label>
 
             <button
               type="submit"
               disabled={savingSettings}
-              className="mt-4 min-h-12 w-full rounded-2xl bg-white text-base font-extrabold text-black disabled:opacity-60"
+              className="mt-4 min-h-12 w-full rounded-2xl bg-[#00FFA3] text-base font-extrabold text-[#090A0B] disabled:opacity-60"
             >
               {savingSettings ? "저장 중" : "설정 저장"}
             </button>
           </form>
         ) : null}
         {cards.length === 0 ? (
-          <p className="rounded-[20px] bg-[#14171F] px-5 py-8 text-lg leading-7 text-[#C4CAD8]">
+          <p className="rounded-[20px] border border-white/10 bg-[#16181C] px-5 py-8 text-lg leading-7 text-[#C4CAD8]">
             {pollStatus === "offline"
               ? "브리핑을 불러오지 못했습니다. 잠시 후 다시 시도합니다."
               : "아직 올라온 브리핑이 없습니다. 후원이나 첫 방문이 오면 여기에 뜹니다."}
@@ -637,37 +656,34 @@ export default function HomePage() {
           cards.map((card) => (
             <article
               key={card.id}
-              className={`rounded-[22px] bg-[#14171F] px-4 py-4 ${
-                freshIds.has(card.id) ? "ring-2 ring-[#3DDC97]" : ""
-              } ${card.isPinned ? "outline outline-1 outline-[#FFE08A]/50" : ""} ${
-                card.isDone ? "opacity-50" : ""
-              }`}
+              className={`rounded-[22px] border bg-[#16181C] px-3 py-3 ${
+                card.isPinned ? "border-[#FFB800]/70" : freshIds.has(card.id) ? "border-[#00FFA3]" : "border-white/10"
+              } ${card.isDone ? "opacity-50" : ""}`}
             >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="truncate text-lg font-bold">{card.viewer.nickname}</p>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    <span className="rounded-full bg-[#3A2E08] px-3 py-1 text-sm font-extrabold text-[#FFE08A]">
-                      누적 {formatCount(card.viewer.totalCheese)}치즈
-                    </span>
-                    <span
-                      className={`rounded-full px-3 py-1 text-sm font-extrabold ${
-                        card.viewer.visitCount <= 1 ? "bg-[#0E2E1C] text-[#7DFFB3]" : "bg-[#1A2233] text-[#C9D4EA]"
-                      }`}
-                    >
-                      {loyaltyLabel(card.viewer.visitCount)}
-                    </span>
-                  </div>
+              <div className="flex items-center gap-2">
+                <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                  <p className="truncate text-base font-bold">{cardName(card)}</p>
+                  <span
+                    className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-extrabold ${
+                      loyaltyLabel(card) === "단골"
+                        ? "bg-[#FFB800]/15 text-[#FFB800]"
+                        : loyaltyLabel(card) === "익명"
+                          ? "bg-white/10 text-[#D7DDEA]"
+                          : "bg-[#00FFA3]/15 text-[#00FFA3]"
+                    }`}
+                  >
+                    {loyaltyLabel(card)}
+                  </span>
                 </div>
-                <div className="flex shrink-0 flex-col gap-2">
+                <div className="flex shrink-0 gap-1">
                   <button
                     type="button"
                     aria-pressed={card.isPinned}
                     onClick={() => {
                       void updateCard(card.id, { isPinned: !card.isPinned });
                     }}
-                    className={`min-h-12 rounded-2xl px-3 text-sm font-bold ${
-                      card.isPinned ? "bg-[#3A2E08] text-[#FFE08A]" : "bg-black text-[#D7DDEA]"
+                    className={`min-h-10 rounded-xl px-2 text-sm font-bold ${
+                      card.isPinned ? "bg-[#FFB800]/15 text-[#FFB800]" : "bg-[#0E0F11] text-[#D7DDEA]"
                     }`}
                   >
                     {card.isPinned ? "📌 고정됨" : "📌 고정"}
@@ -678,20 +694,21 @@ export default function HomePage() {
                     onClick={() => {
                       void updateCard(card.id, { isDone: !card.isDone });
                     }}
-                    className={`min-h-12 rounded-2xl px-3 text-sm font-bold ${
-                      card.isDone ? "bg-[#143226] text-[#B6FFD8]" : "bg-black text-[#D7DDEA]"
+                    className={`min-h-10 rounded-xl px-2 text-sm font-bold ${
+                      card.isDone ? "bg-[#00FFA3]/15 text-[#00FFA3]" : "bg-[#0E0F11] text-[#D7DDEA]"
                     }`}
                   >
                     {card.isDone ? "✓ 완료됨" : "✓ 완료"}
                   </button>
                 </div>
               </div>
+              {card.cheeseAmount > 0 ? (
+                <p className="mt-2 text-sm font-extrabold text-[#FFB800]">{formatCount(card.cheeseAmount)}치즈</p>
+              ) : null}
 
-              <p className="mt-4 text-[1.65rem] font-extrabold leading-snug tracking-tight text-white">
-                {card.summarySnapshot}
-              </p>
+              <p className="mt-2 text-lg font-bold leading-snug text-white">{card.summarySnapshot}</p>
 
-              <div className="mt-4 flex flex-col gap-2">
+              <div className="mt-3 flex flex-col gap-2">
                 {card.suggestedReplies.slice(0, 2).map((reply, index) => (
                   <button
                     key={`${card.id}-${index}`}
@@ -699,7 +716,7 @@ export default function HomePage() {
                     onClick={() => {
                       void copyReply(reply);
                     }}
-                    className="min-h-12 rounded-2xl bg-black px-4 py-3 text-left text-lg font-bold leading-6 text-white active:bg-[#222838]"
+                    className="min-h-12 rounded-2xl border border-[#00FFA3]/40 bg-[#00FFA3]/5 px-4 py-3 text-left text-base font-bold leading-6 text-white"
                   >
                     {reply}
                   </button>
@@ -710,9 +727,9 @@ export default function HomePage() {
         )}
       </main>
 
-      <div className="fixed bottom-0 left-1/2 z-20 w-full max-w-[430px] -translate-x-1/2 border-t border-white/10 bg-black px-4 py-3">
+      <div className="fixed bottom-0 left-1/2 z-20 w-full max-w-[430px] -translate-x-1/2 border-t border-white/10 bg-[#0E0F11] px-4 py-3">
         <p className="text-sm font-extrabold text-[#D7DDEA]">🧪 시뮬레이터</p>
-        <div className="mt-2 grid grid-cols-2 gap-2">
+        <div className="mt-2 grid grid-cols-3 gap-2">
           <button
             type="button"
             disabled={sending}
@@ -724,9 +741,9 @@ export default function HomePage() {
                 cheeseAmount: REGULAR_CHEESE,
               });
             }}
-            className="min-h-12 rounded-2xl bg-[#3A2E08] px-2 text-sm font-extrabold text-[#FFE08A] disabled:opacity-60"
+            className="min-h-12 rounded-2xl bg-[#FFB800]/15 px-1 text-xs font-extrabold text-[#FFB800] disabled:opacity-60"
           >
-            💰 단골 1만 치즈 후원
+            단골 1만 치즈
           </button>
           <button
             type="button"
@@ -740,9 +757,24 @@ export default function HomePage() {
                 recentChats: ["처음 들렀어요"],
               });
             }}
-            className="min-h-12 rounded-2xl bg-[#0E2E1C] px-2 text-sm font-extrabold text-[#7DFFB3] disabled:opacity-60"
+            className="min-h-12 rounded-2xl bg-[#00FFA3]/10 px-1 text-xs font-extrabold text-[#00FFA3] disabled:opacity-60"
           >
-            🌱 뉴비 첫 채팅
+            뉴비 첫 채팅
+          </button>
+          <button
+            type="button"
+            disabled={sending}
+            onClick={() => {
+              void sendSimulator({
+                userIdHash: "anonymous",
+                nickname: ANONYMOUS_NICKNAME,
+                message: "응원합니다",
+                cheeseAmount: 10_000,
+              });
+            }}
+            className="min-h-12 rounded-2xl border border-white/10 bg-[#16181C] px-1 text-xs font-extrabold text-white disabled:opacity-60"
+          >
+            익명 1만 치즈
           </button>
         </div>
       </div>
@@ -750,7 +782,7 @@ export default function HomePage() {
       {toast ? (
         <div
           role="status"
-          className="fixed bottom-28 left-1/2 z-30 -translate-x-1/2 rounded-full bg-white px-5 py-3 text-base font-extrabold text-black"
+          className="fixed bottom-28 left-1/2 z-30 -translate-x-1/2 rounded-full bg-[#00FFA3] px-5 py-3 text-base font-extrabold text-[#090A0B]"
         >
           {toast}
         </div>

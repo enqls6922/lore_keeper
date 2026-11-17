@@ -2,10 +2,11 @@ import { Prisma } from "@prisma/client";
 import type { User, Viewer } from "@prisma/client";
 import { connection } from "next/server";
 
+import { ANONYMOUS_NICKNAME, isAnonymousDonor } from "@/lib/anonymous";
 import { requireUser, unauthorizedResponse } from "@/lib/auth/current-user";
 import { briefingInclude, toBriefingCard } from "@/lib/briefing-mapper";
 import type { BriefingCard, BriefingTriggerType } from "@/lib/briefing-card";
-import { generateBriefing } from "@/lib/llm/briefing";
+import { generateBriefing, type BriefingPerson } from "@/lib/llm/briefing";
 import { prisma } from "@/lib/prisma";
 
 const MAX_RECENT_CHATS = 15;
@@ -19,9 +20,10 @@ interface ChatEventInput {
   cheeseAmount: number;
   recentChats: string[];
   forceBriefing: boolean;
+  isAnonymous: boolean;
 }
 
-export type EventSkipReason = "first-chat-off" | "known-viewer" | "below-minimum";
+export type EventSkipReason = "first-chat-off" | "known-viewer" | "below-minimum" | "anonymous-chat";
 
 export interface ChatEventResponse {
   triggerType: BriefingTriggerType | null;
@@ -84,11 +86,20 @@ function readEventInput(value: unknown): ChatEventInput | null {
   if (!isRecord(value)) {
     return null;
   }
-  const userIdHash = readBounded(value.userIdHash, 128);
-  const nickname = readBounded(value.nickname, 40);
-  if (!userIdHash || !nickname || typeof value.message !== "string" || value.message.length > MAX_CHAT_LENGTH) {
+  const rawHash = typeof value.userIdHash === "string" ? value.userIdHash.trim() : "";
+  const rawNick = typeof value.nickname === "string" ? value.nickname.trim() : "";
+  const anonymous = isAnonymousDonor(rawHash, rawNick);
+  if (rawHash.length > 128 || rawNick.length > 40) {
     return null;
   }
+  if (!anonymous && (rawHash.length === 0 || rawNick.length === 0)) {
+    return null;
+  }
+  if (typeof value.message !== "string" || value.message.length > MAX_CHAT_LENGTH) {
+    return null;
+  }
+  const userIdHash = rawHash;
+  const nickname = anonymous ? ANONYMOUS_NICKNAME : rawNick;
   if (
     typeof value.cheeseAmount !== "number" ||
     !Number.isInteger(value.cheeseAmount) ||
@@ -102,8 +113,21 @@ function readEventInput(value: unknown): ChatEventInput | null {
     nickname,
     message: value.message.trim(),
     cheeseAmount: value.cheeseAmount,
-    recentChats: readRecentChats(value.recentChats),
+    recentChats: anonymous ? [] : readRecentChats(value.recentChats),
     forceBriefing: value.forceBriefing === true,
+    isAnonymous: anonymous,
+  };
+}
+
+function toPerson(viewer: Viewer): BriefingPerson {
+  return {
+    userId: viewer.userId,
+    viewerId: viewer.id,
+    nickname: viewer.nickname,
+    totalCheese: viewer.totalCheese,
+    visitCount: viewer.visitCount,
+    aiSummary: viewer.aiSummary,
+    isAnonymous: false,
   };
 }
 
@@ -132,7 +156,7 @@ async function publishBriefing(
 ): Promise<Response> {
   const triggerType = resolveTriggerType(input.cheeseAmount, isNew);
   const briefing = await generateBriefing({
-    viewer,
+    person: toPerson(viewer),
     recentChats: input.recentChats.map((message) => ({ message })),
     triggerType,
     triggerMessage: input.message,
@@ -157,8 +181,43 @@ async function publishBriefing(
   return Response.json(body, { headers: NO_STORE });
 }
 
+async function publishAnonymous(user: User, input: ChatEventInput): Promise<Response> {
+  const briefing = await generateBriefing({
+    person: {
+      userId: user.id,
+      viewerId: null,
+      nickname: ANONYMOUS_NICKNAME,
+      totalCheese: 0,
+      visitCount: 0,
+      aiSummary: null,
+      isAnonymous: true,
+    },
+    recentChats: [],
+    triggerType: "CHEESE",
+    triggerMessage: input.message,
+    cheeseAmount: input.cheeseAmount,
+    streamTone: user.streamTone,
+    streamContext: user.streamContext,
+  });
+  const card = briefing
+    ? toBriefingCard(
+        await prisma.briefing.findUniqueOrThrow({
+          where: { id: briefing.id },
+          include: briefingInclude,
+        }),
+      )
+    : null;
+  const body: ChatEventResponse = {
+    triggerType: card ? "CHEESE" : null,
+    briefing: card,
+    viewer: null,
+    skipReason: null,
+  };
+  return Response.json(body, { headers: NO_STORE });
+}
+
 /**
- * 후원은 항상 누적한다. 브리핑은 최소 치즈 이상이거나, 첫 채팅 설정이 켜진 신규 시청자일 때만 만든다.
+ * 식별된 후원은 항상 누적한다. 익명 후원은 시청자 행을 만들지 않고 카드만 남긴다.
  */
 export async function POST(request: Request): Promise<Response> {
   await connection();
@@ -179,6 +238,16 @@ export async function POST(request: Request): Promise<Response> {
 
     const now = new Date();
     const viewerKey = { userId: user.id, userIdHash: input.userIdHash };
+
+    if (input.isAnonymous) {
+      if (input.cheeseAmount <= 0) {
+        return skipped("anonymous-chat");
+      }
+      if (!input.forceBriefing && input.cheeseAmount < user.minCheeseAmount) {
+        return skipped("below-minimum");
+      }
+      return await publishAnonymous(user, input);
+    }
 
     if (input.cheeseAmount <= 0) {
       if (!input.forceBriefing && !user.enableFirstChat) {

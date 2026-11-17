@@ -3,8 +3,9 @@ import {
   SchemaType,
   type GenerationConfig,
 } from "@google/generative-ai";
-import type { Briefing, Viewer } from "@prisma/client";
+import type { Briefing } from "@prisma/client";
 
+import { ANONYMOUS_NICKNAME } from "@/lib/anonymous";
 import { prisma } from "@/lib/prisma";
 
 /** 브리핑을 만든 계기. 스키마의 triggerType 과 동일한 값만 허용한다. */
@@ -16,8 +17,19 @@ export interface BriefingRecentChat {
   createdAt?: Date;
 }
 
+/** 브리핑의 대상. 익명이면 viewerId 가 없고 누적 기록도 없다. */
+export interface BriefingPerson {
+  userId: string;
+  viewerId: string | null;
+  nickname: string;
+  totalCheese: number;
+  visitCount: number;
+  aiSummary: string | null;
+  isAnonymous: boolean;
+}
+
 export interface GenerateBriefingInput {
-  viewer: Viewer;
+  person: BriefingPerson;
   /** 최근 채팅. 15개를 넘기면 마지막 15개만 사용한다. 시각이 있으면 오래된 순으로 정렬한다. */
   recentChats: BriefingRecentChat[];
   triggerType: BriefingTriggerType;
@@ -46,6 +58,7 @@ const SYSTEM_PROMPT = `너는 한국어 버튜버·인터넷 방송 전문 방�
 - 이전 요약 문장과 사실 데이터의 숫자가 다르면 사실 데이터의 숫자를 따른다.
 - 방송 컨셉 메모는 말투와 호칭에만 반영한다. 메모에 없는 사건이나 숫자를 사실처럼 쓰지 않는다.
 - suggestedReplies는 스트리머가 마이크에 대고 바로 받아칠 구어체 멘트 정확히 2개다. [방송 말투]를 그대로 따른다.
+- 익명 후원이면 누적 치즈, 방문 횟수, 단골 여부를 절대 말하지 않는다. 이번 치즈만 말하고, 추천 멘트는 "익명님 1,000치즈 감사합니다!"처럼 이번 후원만 자연스럽게 말한다.
 - 마크다운, 코드 블록, 머리말, 부연 설명은 넣지 않는다.`;
 
 const generationConfig: GenerationConfig = {
@@ -100,13 +113,29 @@ function repliesForTone(tone: string, lines: Record<string, [string, string]>): 
   return lines[tone] ?? lines["친근한 반말"];
 }
 
+function anonymousDraft(cheeseAmount: string, tone: string): BriefingDraft {
+  return {
+    summary: `${cheeseAmount}치즈 익명 후원임`,
+    suggestedReplies: repliesForTone(tone, {
+      "친근한 반말": [`익명님 ${cheeseAmount}치즈 고마워!`, "익명님 후원 잘 받았어"],
+      "정중한 존댓말": [`익명님 ${cheeseAmount}치즈 감사합니다!`, "익명님 후원 감사합니다"],
+      "텐션 높은 리액션": [`익명님 ${cheeseAmount}치즈?! 대박이야`, "익명님 고마워!"],
+      "담백한 진행": [`익명님 ${cheeseAmount}치즈 확인했어`, "익명님 후원 받았어"],
+    }),
+  };
+}
+
 /** 모델이 없을 때도 사실 데이터에 있는 숫자만 써서 30자 개조식으로 만든다. */
 function buildFactualDraft(input: GenerateBriefingInput): BriefingDraft {
-  const nickname = input.viewer.nickname;
   const cheeseAmount = formatFact(input.cheeseAmount);
-  const totalCheese = formatFact(input.viewer.totalCheese);
-  const visitCount = formatFact(input.viewer.visitCount);
   const tone = input.streamTone;
+  if (input.person.isAnonymous) {
+    return anonymousDraft(cheeseAmount, tone);
+  }
+
+  const nickname = input.person.nickname;
+  const totalCheese = formatFact(input.person.totalCheese);
+  const visitCount = formatFact(input.person.visitCount);
 
   if (input.triggerType === "CHEESE") {
     return {
@@ -147,8 +176,8 @@ async function saveBriefing(input: GenerateBriefingInput, draft: BriefingDraft):
   return prisma.$transaction(async (tx) => {
     const briefing = await tx.briefing.create({
       data: {
-        userId: input.viewer.userId,
-        viewerId: input.viewer.id,
+        userId: input.person.userId,
+        viewerId: input.person.viewerId,
         triggerType: input.triggerType,
         triggerMessage: input.triggerMessage,
         cheeseAmount: input.cheeseAmount,
@@ -156,10 +185,12 @@ async function saveBriefing(input: GenerateBriefingInput, draft: BriefingDraft):
         suggestedReplies: draft.suggestedReplies,
       },
     });
-    await tx.viewer.update({
-      where: { id: input.viewer.id },
-      data: { aiSummary: draft.summary },
-    });
+    if (input.person.viewerId) {
+      await tx.viewer.update({
+        where: { id: input.person.viewerId },
+        data: { aiSummary: draft.summary },
+      });
+    }
     return briefing;
   });
 }
@@ -189,8 +220,24 @@ function buildUserPrompt(input: GenerateBriefingInput): string {
   const chatBlock =
     chats.length > 0 ? chats.map(formatChatLine).join("\n") : "- (최근 채팅 없음)";
 
-  const previousSummary = input.viewer.aiSummary?.trim() || "없음";
   const context = input.streamContext?.trim() || "없음";
+  if (input.person.isAnonymous) {
+    return `[방송 말투]
+${input.streamTone}
+
+[방송 컨셉 메모]
+${context}
+
+[익명 후원]
+이 후원자는 익명이다. 누적 치즈, 방문 횟수, 단골 여부는 말하지 마라.
+표시 이름: ${ANONYMOUS_NICKNAME}
+이번 치즈: ${input.cheeseAmount}
+이번 메시지: ${input.triggerMessage}
+
+추천 멘트는 "익명님 ${formatFact(input.cheeseAmount)}치즈 감사합니다!"처럼 이번 금액만 자연스럽게 말한다.`;
+  }
+
+  const previousSummary = input.person.aiSummary?.trim() || "없음";
 
   return `[방송 말투]
 ${input.streamTone}
@@ -199,9 +246,9 @@ ${input.streamTone}
 ${context}
 
 [사실 데이터]
-닉네임: ${input.viewer.nickname}
-누적 치즈: ${input.viewer.totalCheese}
-방문 횟수: ${input.viewer.visitCount}
+닉네임: ${input.person.nickname}
+누적 치즈: ${input.person.totalCheese}
+방문 횟수: ${input.person.visitCount}
 이전에 저장된 시청자 요약: ${previousSummary}
 이번 트리거: ${input.triggerType}
 이번 메시지: ${input.triggerMessage}
@@ -213,6 +260,11 @@ ${chatBlock}`;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function mentionsHistory(draft: BriefingDraft): boolean {
+  const text = `${draft.summary} ${draft.suggestedReplies.join(" ")}`;
+  return text.includes("누적") || text.includes("방문") || text.includes("단골");
 }
 
 function parseDraft(raw: string): BriefingDraft {
@@ -261,7 +313,11 @@ export async function generateBriefing(
         generationConfig,
       });
       const result = await model.generateContent(buildUserPrompt(input));
-      return await saveBriefing(input, parseDraft(result.response.text()));
+      const draft = parseDraft(result.response.text());
+      if (input.person.isAnonymous && mentionsHistory(draft)) {
+        throw new Error("익명 브리핑에 누적 기록이 들어 있습니다.");
+      }
+      return await saveBriefing(input, draft);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[generateBriefing] 모델 호출에 실패해 사실 데이터로 저장합니다. ${message}`);

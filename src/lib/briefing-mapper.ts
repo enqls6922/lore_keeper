@@ -30,8 +30,9 @@ function readTriggerType(value: string): BriefingTriggerType {
   return "RETURNING";
 }
 
-/** DB 행을 카드로 바꾼다. 누적 치즈와 방문 수는 저장된 시청자 값이다. */
+/** DB 행을 카드로 바꾼다. 익명은 시청자 누적 없이 표시 이름만 둔다. */
 export function toBriefingCard(row: BriefingWithViewer): BriefingCard {
+  const anonymous = row.viewerId === null || row.viewer === null;
   return {
     id: row.id,
     triggerType: readTriggerType(row.triggerType),
@@ -41,11 +42,14 @@ export function toBriefingCard(row: BriefingWithViewer): BriefingCard {
     suggestedReplies: readReplies(row.suggestedReplies),
     isPinned: row.isPinned,
     isDone: row.isDone,
+    isAnonymous: anonymous,
     createdAt: row.createdAt.toISOString(),
-    viewer: {
-      nickname: row.viewer.nickname,
-      totalCheese: row.viewer.totalCheese,
-      visitCount: row.viewer.visitCount,
-    },
+    viewer: anonymous || !row.viewer
+      ? null
+      : {
+          nickname: row.viewer.nickname,
+          totalCheese: row.viewer.totalCheese,
+          visitCount: row.viewer.visitCount,
+        },
   };
 }

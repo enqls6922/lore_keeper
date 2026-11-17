@@ -16,8 +16,9 @@ export interface BriefingCard {
   suggestedReplies: string[];
   isPinned: boolean;
   isDone: boolean;
+  isAnonymous: boolean;
   createdAt: string;
-  viewer: BriefingViewerSnapshot;
+  viewer: BriefingViewerSnapshot | null;
 }
 
 const TRIGGER_TYPES: readonly BriefingTriggerType[] = [
@@ -41,7 +42,10 @@ function isTriggerType(value: unknown): value is BriefingTriggerType {
   );
 }
 
-function isViewerSnapshot(value: unknown): value is BriefingViewerSnapshot {
+function isViewerSnapshot(value: unknown): value is BriefingViewerSnapshot | null {
+  if (value === null) {
+    return true;
+  }
   if (!isRecord(value)) {
     return false;
   }
@@ -66,6 +70,7 @@ export function isBriefingCard(value: unknown): value is BriefingCard {
     value.suggestedReplies.every((reply) => typeof reply === "string") &&
     typeof value.isPinned === "boolean" &&
     typeof value.isDone === "boolean" &&
+    typeof value.isAnonymous === "boolean" &&
     typeof value.createdAt === "string"
   );
 }
