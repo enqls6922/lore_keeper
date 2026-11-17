@@ -1,8 +1,8 @@
 import { PrismaClient } from "@prisma/client";
 
 /**
- * Next.js 개발 서버는 파일을 저장할 때마다 모듈을 다시 평가한다.
- * 그때마다 PrismaClient를 새로 만들면 SQLite 연결이 쌓여 DB 잠금이 난다.
+ * 서버리스 함수는 호출마다 모듈을 다시 평가할 수 있다.
+ * 그때마다 PrismaClient를 새로 만들면 PostgreSQL 연결이 쌓인다.
  * 프로세스 전역(globalThis)에 인스턴스를 하나만 붙여 두고 재사용한다.
  */
 const globalForPrisma = globalThis as typeof globalThis & {

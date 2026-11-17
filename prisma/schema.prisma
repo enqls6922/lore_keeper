@@ -1,46 +1,46 @@
 generator client {
-      provider = "prisma-client-js"
-}
-
-model Viewer {
-      id              String     @id @default(cuid())
-      userIdHash      String     @unique // 치지직 고유 유저 식별 해시
-      nickname        String
-      totalCheese     Int        @default(0)
-      visitCount      Int        @default(1)
-      aiSummary       String?    // LLM이 요약한 시청자 특징 (1~2줄)
-      lastSeenAt      DateTime   @default(now())
-      createdAt       DateTime   @default(now())
-      chatLogs        ChatLog[]
-      briefings       Briefing[]
-}
-
-model ChatLog {
-      id          String   @id @default(cuid())
-      viewerId    String
-      viewer      Viewer   @relation(fields: [viewerId], references: [id])
-      message     String
-      cheeseAmount Int     @default(0) // 0이면 일반 채팅, >0이면 치즈 후원
-      createdAt   DateTime @default(now())
-
-      @@index([viewerId, createdAt])
-}
-
-model Briefing {
-      id               String   @id @default(cuid())
-      viewerId         String
-      viewer           Viewer   @relation(fields: [viewerId], references: [id])
-      triggerType      String   // "CHEESE" | "NEW_VIEWER" | "RETURNING"
-      triggerMessage   String
-      cheeseAmount     Int      @default(0)
-      summarySnapshot  String   // 당시 시청자 요약
-      suggestedReplies Json     // string[] 형태의 추천 멘트 2~3개
-      isPinned         Boolean  @default(false)
-      createdAt        DateTime @default(now())
+  provider = "prisma-client-js"
 }
 
 datasource db {
-      provider  = "postgresql"
-      url       = env("DATABASE_URL")
-      directUrl = env("DIRECT_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Viewer {
+  id          String     @id @default(cuid())
+  userIdHash  String     @unique // 치지직 고유 유저 식별 해시
+  nickname    String
+  totalCheese Int        @default(0)
+  visitCount  Int        @default(1)
+  aiSummary   String? // LLM이 요약한 시청자 특징 (1~2줄)
+  lastSeenAt  DateTime   @default(now())
+  createdAt   DateTime   @default(now())
+  chatLogs    ChatLog[]
+  briefings   Briefing[]
+}
+
+model ChatLog {
+  id           String   @id @default(cuid())
+  viewerId     String
+  viewer       Viewer   @relation(fields: [viewerId], references: [id])
+  message      String
+  cheeseAmount Int      @default(0) // 0이면 일반 채팅, >0이면 치즈 후원
+  createdAt    DateTime @default(now())
+
+  @@index([viewerId, createdAt])
+}
+
+model Briefing {
+  id               String   @id @default(cuid())
+  viewerId         String
+  viewer           Viewer   @relation(fields: [viewerId], references: [id])
+  triggerType      String // "CHEESE" | "NEW_VIEWER" | "RETURNING"
+  triggerMessage   String
+  cheeseAmount     Int      @default(0)
+  summarySnapshot  String // 당시 시청자 요약
+  suggestedReplies Json // string[] 형태의 추천 멘트 2~3개
+  isPinned         Boolean  @default(false)
+  createdAt        DateTime @default(now())
 }
