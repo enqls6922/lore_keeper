@@ -23,6 +23,8 @@ interface SimulatorEvent {
   nickname: string;
   message: string;
   cheeseAmount: number;
+  recentChats?: string[];
+  forceBriefing?: boolean;
 }
 
 function formatCount(value: number): string {
@@ -458,6 +460,7 @@ export default function HomePage() {
                 nickname: "새시청자",
                 message: "처음 들렀어요",
                 cheeseAmount: 0,
+                forceBriefing: true,
               });
             }}
             className="min-h-12 rounded-2xl bg-[#0E2E1C] px-2 text-sm font-extrabold text-[#7DFFB3] disabled:opacity-60"

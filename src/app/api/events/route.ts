@@ -6,6 +6,7 @@ import { generateBriefing } from "@/lib/llm/briefing";
 import { prisma } from "@/lib/prisma";
 
 const MAX_RECENT_CHATS = 15;
+const MAX_CHAT_LENGTH = 500;
 const NO_STORE = { "Cache-Control": "no-store" } as const;
 
 interface ChatEventInput {
@@ -13,6 +14,8 @@ interface ChatEventInput {
   nickname: string;
   message: string;
   cheeseAmount: number;
+  recentChats: string[];
+  forceBriefing: boolean;
 }
 
 export interface ChatEventResponse {
@@ -22,7 +25,7 @@ export interface ChatEventResponse {
     nickname: string;
     totalCheese: number;
     visitCount: number;
-  };
+  } | null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -40,13 +43,44 @@ function readBounded(value: unknown, maxLength: number): string | null {
   return trimmed;
 }
 
+function resolveTriggerType(cheeseAmount: number, isNew: boolean): BriefingTriggerType {
+  if (cheeseAmount > 0) {
+    return "CHEESE";
+  }
+  if (isNew) {
+    return "NEW_VIEWER";
+  }
+  return "RETURNING";
+}
+
+function readRecentChats(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const chats: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") {
+      continue;
+    }
+    const trimmed = item.trim();
+    if (trimmed.length === 0 || trimmed.length > MAX_CHAT_LENGTH) {
+      continue;
+    }
+    chats.push(trimmed);
+    if (chats.length >= MAX_RECENT_CHATS) {
+      break;
+    }
+  }
+  return chats;
+}
+
 function readEventInput(value: unknown): ChatEventInput | null {
   if (!isRecord(value)) {
     return null;
   }
   const userIdHash = readBounded(value.userIdHash, 128);
   const nickname = readBounded(value.nickname, 40);
-  if (!userIdHash || !nickname || typeof value.message !== "string" || value.message.length > 500) {
+  if (!userIdHash || !nickname || typeof value.message !== "string" || value.message.length > MAX_CHAT_LENGTH) {
     return null;
   }
   if (
@@ -62,10 +96,12 @@ function readEventInput(value: unknown): ChatEventInput | null {
     nickname,
     message: value.message.trim(),
     cheeseAmount: value.cheeseAmount,
+    recentChats: readRecentChats(value.recentChats),
+    forceBriefing: value.forceBriefing === true,
   };
 }
 
-/** 시청자 채팅·후원을 저장하고, 후원이거나 첫 방문일 때만 브리핑을 만든다. */
+/** 치즈 후원이나 강제 브리핑만 저장한다. 일반 채팅은 브라우저에 있으므로 DB에 쓰지 않는다. */
 export async function POST(request: Request): Promise<Response> {
   await connection();
 
@@ -76,6 +112,11 @@ export async function POST(request: Request): Promise<Response> {
         { message: "userIdHash, nickname, message, cheeseAmount가 필요합니다." },
         { status: 400, headers: NO_STORE },
       );
+    }
+
+    if (input.cheeseAmount <= 0 && !input.forceBriefing) {
+      const skipped: ChatEventResponse = { triggerType: null, briefing: null, viewer: null };
+      return Response.json(skipped, { headers: NO_STORE });
     }
 
     const now = new Date();
@@ -102,49 +143,11 @@ export async function POST(request: Request): Promise<Response> {
       },
     });
 
-    await prisma.chatLog.create({
-      data: {
-        viewerId: viewer.id,
-        message: input.message,
-        cheeseAmount: input.cheeseAmount,
-        createdAt: now,
-      },
-    });
-
-    let triggerType: BriefingTriggerType | null = null;
-    if (input.cheeseAmount > 0) {
-      triggerType = "CHEESE";
-    } else if (isNew) {
-      triggerType = "NEW_VIEWER";
-    }
-
-    if (!triggerType) {
-      const body: ChatEventResponse = {
-        triggerType: null,
-        briefing: null,
-        viewer: {
-          nickname: viewer.nickname,
-          totalCheese: viewer.totalCheese,
-          visitCount: viewer.visitCount,
-        },
-      };
-      return Response.json(body, { headers: NO_STORE });
-    }
-
-    const recentChats = await prisma.chatLog.findMany({
-      where: { viewerId: viewer.id },
-      orderBy: { createdAt: "desc" },
-      take: MAX_RECENT_CHATS,
-      select: {
-        message: true,
-        cheeseAmount: true,
-        createdAt: true,
-      },
-    });
+    const triggerType: BriefingTriggerType = resolveTriggerType(input.cheeseAmount, isNew);
 
     const briefing = await generateBriefing({
       viewer,
-      recentChats,
+      recentChats: input.recentChats.map((message) => ({ message })),
       triggerType,
       triggerMessage: input.message,
       cheeseAmount: input.cheeseAmount,
