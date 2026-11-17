@@ -1,5 +1,6 @@
 import { connection } from "next/server";
 
+import { requireUser, unauthorizedResponse } from "@/lib/auth/current-user";
 import { briefingInclude, toBriefingCard } from "@/lib/briefing-mapper";
 import type { BriefingCard, BriefingTriggerType } from "@/lib/briefing-card";
 import { generateBriefing } from "@/lib/llm/briefing";
@@ -114,21 +115,28 @@ export async function POST(request: Request): Promise<Response> {
       );
     }
 
+    const user = await requireUser();
+    if (!user) {
+      return unauthorizedResponse();
+    }
+
     if (input.cheeseAmount <= 0 && !input.forceBriefing) {
       const skipped: ChatEventResponse = { triggerType: null, briefing: null, viewer: null };
       return Response.json(skipped, { headers: NO_STORE });
     }
 
     const now = new Date();
+    const viewerKey = { userId: user.id, userIdHash: input.userIdHash };
     const previous = await prisma.viewer.findUnique({
-      where: { userIdHash: input.userIdHash },
+      where: { userId_userIdHash: viewerKey },
       select: { id: true },
     });
     const isNew = previous === null;
 
     const viewer = await prisma.viewer.upsert({
-      where: { userIdHash: input.userIdHash },
+      where: { userId_userIdHash: viewerKey },
       create: {
+        userId: user.id,
         userIdHash: input.userIdHash,
         nickname: input.nickname,
         totalCheese: input.cheeseAmount,

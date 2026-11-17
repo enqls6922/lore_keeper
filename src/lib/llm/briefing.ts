@@ -109,6 +109,7 @@ async function saveBriefing(input: GenerateBriefingInput, draft: BriefingDraft):
   return prisma.$transaction(async (tx) => {
     const briefing = await tx.briefing.create({
       data: {
+        userId: input.viewer.userId,
         viewerId: input.viewer.id,
         triggerType: input.triggerType,
         triggerMessage: input.triggerMessage,

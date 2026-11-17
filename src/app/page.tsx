@@ -1,8 +1,10 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useChzzkChat } from "@/hooks/useChzzkChat";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import {
   compareBriefingCards,
   isBriefingCard,
@@ -55,6 +57,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+interface AccountProfile {
+  email: string;
+  chzzkChannelId: string | null;
+}
+
+function isAccountProfile(value: unknown): value is AccountProfile {
+  if (!isRecord(value) || typeof value.email !== "string") {
+    return false;
+  }
+  return value.chzzkChannelId === null || typeof value.chzzkChannelId === "string";
+}
+
 function readPostedBriefing(value: unknown): BriefingCard | null {
   if (!isRecord(value)) {
     return null;
@@ -63,6 +77,7 @@ function readPostedBriefing(value: unknown): BriefingCard | null {
 }
 
 export default function HomePage() {
+  const router = useRouter();
   const [cards, setCards] = useState<BriefingCard[]>([]);
   const [pollStatus, setPollStatus] = useState<PollStatus>("loading");
   const [freshIds, setFreshIds] = useState<ReadonlySet<string>>(new Set());
@@ -70,6 +85,8 @@ export default function HomePage() {
   const [wakeOn, setWakeOn] = useState(false);
   const [wakeSupported, setWakeSupported] = useState(true);
   const [channelId, setChannelId] = useState("");
+  const [accountEmail, setAccountEmail] = useState<string | null>(null);
+  const [savingChannel, setSavingChannel] = useState(false);
   const [chatEnabled, setChatEnabled] = useState(false);
   const [sending, setSending] = useState(false);
   const knownIds = useRef<Set<string>>(new Set());
@@ -114,6 +131,10 @@ export default function HomePage() {
       polling.current = true;
       try {
         const response = await fetch("/api/briefings", { cache: "no-store" });
+        if (response.status === 401) {
+          router.push("/login");
+          return;
+        }
         if (!response.ok) {
           throw new Error("브리핑 목록 요청이 실패했습니다.");
         }
@@ -145,7 +166,32 @@ export default function HomePage() {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [applyCards]);
+  }, [applyCards, router]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadAccount(): Promise<void> {
+      const response = await fetch("/api/user", { cache: "no-store" });
+      if (response.status === 401) {
+        router.push("/login");
+        return;
+      }
+      const payload: unknown = await response.json().catch(() => null);
+      if (!response.ok || !isAccountProfile(payload) || cancelled) {
+        return;
+      }
+      setAccountEmail(payload.email);
+      if (payload.chzzkChannelId) {
+        setChannelId((current) => (current.trim().length > 0 ? current : payload.chzzkChannelId ?? ""));
+      }
+    }
+
+    void loadAccount();
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
 
   useEffect(() => {
     if (freshIds.size === 0) {
@@ -206,6 +252,41 @@ export default function HomePage() {
     }
     toastTimer.current = setTimeout(() => setToast(null), TOAST_MS);
   }, []);
+
+  async function saveChannel(): Promise<void> {
+    setSavingChannel(true);
+    try {
+      const response = await fetch("/api/user", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chzzkChannelId: channelId.trim() }),
+      });
+      const payload: unknown = await response.json().catch(() => null);
+      if (!response.ok || !isAccountProfile(payload)) {
+        const message =
+          isRecord(payload) && typeof payload.message === "string" ? payload.message : "채널 ID를 저장하지 못했습니다.";
+        showToast(message);
+        return;
+      }
+      setAccountEmail(payload.email);
+      showToast("채널 ID를 저장했습니다.");
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "채널 저장 실패";
+      console.error(`[채널] ${message}`);
+      showToast("채널 ID를 저장하지 못했습니다.");
+    } finally {
+      setSavingChannel(false);
+    }
+  }
+
+  async function logout(): Promise<void> {
+    const supabase = createSupabaseBrowserClient();
+    if (supabase) {
+      await supabase.auth.signOut();
+    }
+    router.push("/login");
+    router.refresh();
+  }
 
   async function toggleWake(): Promise<void> {
     if (!("wakeLock" in navigator)) {
@@ -315,19 +396,33 @@ export default function HomePage() {
     <div className="mx-auto flex min-h-full w-full max-w-[430px] flex-col bg-black text-white">
       <header className="sticky top-0 z-20 border-b border-white/10 bg-black px-4 pb-3 pt-4">
         <div className="flex items-center justify-between gap-3">
-          <h1 className="text-[1.65rem] font-extrabold tracking-tight">LoreKeeper</h1>
-          <button
-            type="button"
-            onClick={() => {
-              void toggleWake();
-            }}
-            disabled={!wakeSupported}
-            className={`min-h-12 shrink-0 rounded-full px-4 text-sm font-bold ${
-              wakeOn ? "bg-[#143226] text-[#B6FFD8]" : "bg-[#14171F] text-white"
-            } disabled:text-[#8B93A7]`}
-          >
-            {wakeSupported ? (wakeOn ? "화면 유지 중" : "화면 켜 두기") : "화면 유지 불가"}
-          </button>
+          <div className="min-w-0">
+            <h1 className="text-[1.65rem] font-extrabold tracking-tight">LoreKeeper</h1>
+            {accountEmail ? <p className="truncate text-sm font-semibold text-[#AEB6C9]">{accountEmail}</p> : null}
+          </div>
+          <div className="flex shrink-0 gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                void toggleWake();
+              }}
+              disabled={!wakeSupported}
+              className={`min-h-12 rounded-full px-3 text-sm font-bold ${
+                wakeOn ? "bg-[#143226] text-[#B6FFD8]" : "bg-[#14171F] text-white"
+              } disabled:text-[#8B93A7]`}
+            >
+              {wakeSupported ? (wakeOn ? "화면 유지 중" : "화면 켜 두기") : "화면 유지 불가"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                void logout();
+              }}
+              className="min-h-12 rounded-full bg-[#14171F] px-3 text-sm font-bold text-white"
+            >
+              로그아웃
+            </button>
+          </div>
         </div>
 
         <label className="mt-3 block text-sm font-bold text-[#AEB6C9]" htmlFor="channel-id">
@@ -346,6 +441,17 @@ export default function HomePage() {
             className="mt-1 min-h-12 w-full rounded-2xl bg-[#14171F] px-4 text-base font-semibold text-white outline-none placeholder:text-[#6E768A]"
           />
         </label>
+
+        <button
+          type="button"
+          disabled={savingChannel}
+          onClick={() => {
+            void saveChannel();
+          }}
+          className="mt-2 min-h-12 w-full rounded-2xl bg-[#14171F] text-base font-extrabold text-white disabled:text-[#8B93A7]"
+        >
+          {savingChannel ? "저장 중" : "채널 저장"}
+        </button>
 
         <button
           type="button"

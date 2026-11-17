@@ -10,6 +10,8 @@ import { prisma } from "@/lib/prisma";
 
 const TICK_MS = 5_000;
 const MAX_RECENT_CHATS = 15;
+const MOCK_USER_ID = "00000000-0000-4000-8000-000000000001";
+const recentByHash = new Map<string, string[]>();
 
 interface RegularViewer {
   userIdHash: "user_sky" | "user_gamer" | "user_cat";
@@ -126,9 +128,16 @@ async function simulateOnce(): Promise<void> {
   const event = rollEvent();
   const now = new Date();
 
+  await prisma.user.upsert({
+    where: { id: MOCK_USER_ID },
+    create: { id: MOCK_USER_ID, email: "mock@lorekeeper.local" },
+    update: {},
+  });
+
   const viewer = await prisma.viewer.upsert({
-    where: { userIdHash: actor.userIdHash },
+    where: { userId_userIdHash: { userId: MOCK_USER_ID, userIdHash: actor.userIdHash } },
     create: {
+      userId: MOCK_USER_ID,
       userIdHash: actor.userIdHash,
       nickname: actor.nickname,
       totalCheese: event.cheeseAmount,
@@ -143,22 +152,16 @@ async function simulateOnce(): Promise<void> {
     },
   });
 
-  const chatLog = await prisma.chatLog.create({
-    data: {
-      viewerId: viewer.id,
-      message: event.message,
-      cheeseAmount: event.cheeseAmount,
-      createdAt: now,
-    },
-  });
-
-  const chatCount = await prisma.chatLog.count({
-    where: { viewerId: viewer.id },
-  });
-  const isFirstChat = viewer.visitCount === 1 && chatCount === 1;
+  const recent = recentByHash.get(viewer.userIdHash) ?? [];
+  recent.push(event.message);
+  if (recent.length > MAX_RECENT_CHATS) {
+    recent.splice(0, recent.length - MAX_RECENT_CHATS);
+  }
+  recentByHash.set(viewer.userIdHash, recent);
+  const isFirstChat = viewer.visitCount === 1;
 
   console.log(
-    `[이벤트] ${viewer.nickname} (${viewer.userIdHash}) | 방문 ${viewer.visitCount} | 누적 치즈 ${viewer.totalCheese} | ${event.cheeseAmount > 0 ? `치즈 ${event.cheeseAmount}` : "일반 채팅"} | ${chatLog.message}`,
+    `[이벤트] ${viewer.nickname} (${viewer.userIdHash}) | 방문 ${viewer.visitCount} | 누적 치즈 ${viewer.totalCheese} | ${event.cheeseAmount > 0 ? `치즈 ${event.cheeseAmount}` : "일반 채팅"} | ${event.message}`,
   );
 
   // 후원이 있거나, 방금 DB에 처음 등록된 시청자의 첫 채팅일 때만 브리핑한다.
@@ -173,20 +176,9 @@ async function simulateOnce(): Promise<void> {
     return;
   }
 
-  const recentChats = await prisma.chatLog.findMany({
-    where: { viewerId: viewer.id },
-    orderBy: { createdAt: "desc" },
-    take: MAX_RECENT_CHATS,
-    select: {
-      message: true,
-      cheeseAmount: true,
-      createdAt: true,
-    },
-  });
-
   const briefing = await generateBriefing({
     viewer,
-    recentChats,
+    recentChats: (recentByHash.get(viewer.userIdHash) ?? []).map((message) => ({ message })),
     triggerType,
     triggerMessage: event.message,
     cheeseAmount: event.cheeseAmount,
