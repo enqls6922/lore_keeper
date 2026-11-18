@@ -1,120 +1,26 @@
 import "dotenv/config";
 
-import { randomInt, randomUUID } from "node:crypto";
+import { randomInt } from "node:crypto";
 
-import type { BriefingTriggerType } from "@/lib/llm/briefing";
-import { generateBriefing } from "@/lib/llm/briefing";
+import { HIGH_CHEESE } from "@/lib/chat-radar";
+import { summarizeDonation } from "@/lib/llm/pd";
 import { prisma } from "@/lib/prisma";
+import { formatBroadcastTime } from "@/lib/broadcast-time";
 
 const TICK_MS = 5_000;
-const MAX_RECENT_CHATS = 20;
 const MOCK_USER_ID = "00000000-0000-4000-8000-000000000001";
-const recentByHash = new Map<string, string[]>();
+const startedAt = Date.now();
 
-interface RegularViewer {
-  userIdHash: "user_sky" | "user_gamer" | "user_cat";
-  nickname: string;
-}
+const MESSAGES = ["보스 클리어 축하해", "작은 응원이야", "이 장면 보고 바로 보냈어", "야식값 대신 치즈 남긴다"] as const;
+const AMOUNTS = [1000, 3000, 5000, 10000] as const;
 
-interface SimulatedViewer {
-  userIdHash: string;
-  nickname: string;
-}
-
-const REGULARS: readonly RegularViewer[] = [
-  { userIdHash: "user_sky", nickname: "하늘바라기" },
-  { userIdHash: "user_gamer", nickname: "겜돌이" },
-  { userIdHash: "user_cat", nickname: "냥집사" },
-];
-
-const NEW_NICKNAMES = [
-  "별빛토끼",
-  "야식요정",
-  "출근길",
-  "달빛수달",
-  "팝콘중독",
-  "새벽감성",
-  "치즈러버",
-  "조용한팬",
-] as const;
-
-const CHAT_MESSAGES = [
-  "오늘 방송 분위기 좋다",
-  "방금 장면 진짜 웃겼어",
-  "목소리 상태 좋아 보이네",
-  "이 이야기 이어서 해 줘",
-  "화면 구도 마음에 든다",
-  "물 한 잔 하고 와",
-] as const;
-
-const CHEESE_MESSAGES = [
-  "치즈 보낼게, 오늘도 화이팅",
-  "작은 응원이야, 즐겁게 해",
-  "이 장면 보고 바로 보냈어",
-  "야식값 대신 치즈 남긴다",
-] as const;
-
-const CHEESE_AMOUNTS = [1000, 3000, 5000, 10000] as const;
-
-let sequence = 0;
 let ticking = false;
-
-function pickViewer(): SimulatedViewer {
-  const turn = sequence;
-  sequence += 1;
-
-  // 단골 3명과 이번 틱에만 존재하는 신규 시청자를 번갈아 내보낸다.
-  if (turn % 2 === 0) {
-    const regular = REGULARS[(turn / 2) % REGULARS.length];
-    return regular;
-  }
-
-  const nickname = NEW_NICKNAMES[randomInt(NEW_NICKNAMES.length)];
-  return {
-    userIdHash: `user_new_${randomUUID()}`,
-    nickname: `${nickname}${randomInt(100, 1000)}`,
-  };
-}
-
-function rollEvent(): { message: string; cheeseAmount: number } {
-  const isCheese = randomInt(100) < 40;
-  if (!isCheese) {
-    return {
-      message: CHAT_MESSAGES[randomInt(CHAT_MESSAGES.length)],
-      cheeseAmount: 0,
-    };
-  }
-
-  return {
-    message: CHEESE_MESSAGES[randomInt(CHEESE_MESSAGES.length)],
-    cheeseAmount: CHEESE_AMOUNTS[randomInt(CHEESE_AMOUNTS.length)],
-  };
-}
-
-function printBriefing(params: {
-  nickname: string;
-  userIdHash: string;
-  triggerType: BriefingTriggerType;
-  viewerStory: string;
-  contextSummary: string;
-  cheeseAmount: number;
-  totalCheese: number;
-  visitCount: number;
-}): void {
-  console.log("──────── 상황 ────────");
-  console.log(`시청자: ${params.nickname} (${params.userIdHash})`);
-  console.log(
-    `트리거: ${params.triggerType} | 이번 치즈 ${params.cheeseAmount} | 누적 ${params.totalCheese} | 방문 ${params.visitCount}`,
-  );
-  console.log(`기억: ${params.viewerStory}`);
-  console.log(`상황: ${params.contextSummary}`);
-  console.log("──────────────────────");
-}
+let elapsed = 90;
 
 async function simulateOnce(): Promise<void> {
-  const actor = pickViewer();
-  const event = rollEvent();
-  const now = new Date();
+  const message = MESSAGES[randomInt(MESSAGES.length)];
+  const cheeseAmount = AMOUNTS[randomInt(AMOUNTS.length)];
+  elapsed += 15;
 
   await prisma.user.upsert({
     where: { id: MOCK_USER_ID },
@@ -122,69 +28,33 @@ async function simulateOnce(): Promise<void> {
     update: {},
   });
 
-  const viewer = await prisma.viewer.upsert({
-    where: { userId_userIdHash: { userId: MOCK_USER_ID, userIdHash: actor.userIdHash } },
-    create: {
+  const summary = await summarizeDonation({
+    nickname: "후원팬",
+    message,
+    cheeseAmount,
+    recentChats: ["채팅이 잠시 조용하다"],
+    anonymous: false,
+  });
+  await prisma.briefing.create({
+    data: {
       userId: MOCK_USER_ID,
-      userIdHash: actor.userIdHash,
-      nickname: actor.nickname,
-      totalCheese: event.cheeseAmount,
-      visitCount: 1,
-      lastSeenAt: now,
-    },
-    update: {
-      nickname: actor.nickname,
-      totalCheese: { increment: event.cheeseAmount },
-      visitCount: { increment: 1 },
-      lastSeenAt: now,
+      type: "DONATION",
+      title: `후원팬 · ${cheeseAmount.toLocaleString("ko-KR")} 치즈`,
+      summary,
+      signal: null,
     },
   });
-
-  const recent = recentByHash.get(viewer.userIdHash) ?? [];
-  recent.push(event.message);
-  if (recent.length > MAX_RECENT_CHATS) {
-    recent.splice(0, recent.length - MAX_RECENT_CHATS);
+  if (cheeseAmount >= HIGH_CHEESE) {
+    await prisma.highlightMarker.create({
+      data: {
+        userId: MOCK_USER_ID,
+        timestampSec: elapsed,
+        formattedTime: formatBroadcastTime(elapsed),
+        reason: summary,
+      },
+    });
   }
-  recentByHash.set(viewer.userIdHash, recent);
-  console.log(
-    `[이벤트] ${viewer.nickname} (${viewer.userIdHash}) | 방문 ${viewer.visitCount} | 누적 치즈 ${viewer.totalCheese} | ${event.cheeseAmount > 0 ? `치즈 ${event.cheeseAmount}` : "일반 채팅"} | ${event.message}`,
-  );
-
-  if (event.cheeseAmount <= 0) {
-    return;
-  }
-
-  const briefing = await generateBriefing({
-    person: {
-      userId: viewer.userId,
-      viewerId: viewer.id,
-      nickname: viewer.nickname,
-      totalCheese: viewer.totalCheese,
-      visitCount: viewer.visitCount,
-      storyMemo: viewer.storyMemo,
-      isAnonymous: false,
-    },
-    recentChats: (recentByHash.get(viewer.userIdHash) ?? []).map((message) => ({ message })),
-    triggerType: "CHEESE",
-    triggerMessage: event.message,
-    cheeseAmount: event.cheeseAmount,
-  });
-
-  if (!briefing) {
-    console.log("[브리핑] 생성에 실패해서 이번 틱은 이벤트 저장만 마쳤습니다.");
-    return;
-  }
-
-  printBriefing({
-    nickname: viewer.nickname,
-    userIdHash: viewer.userIdHash,
-    triggerType: "CHEESE",
-    viewerStory: briefing.viewerStory ?? "",
-    contextSummary: briefing.contextSummary ?? "",
-    cheeseAmount: briefing.cheeseAmount,
-    totalCheese: viewer.totalCheese,
-    visitCount: viewer.visitCount,
-  });
+  console.log(`[후원] ${cheeseAmount}치즈 | ${summary} | 경과 ${formatBroadcastTime(Math.floor((Date.now() - startedAt) / 1000))}`);
 }
 
 async function tick(): Promise<void> {
@@ -192,7 +62,6 @@ async function tick(): Promise<void> {
     console.log("[시뮬레이터] 이전 틱이 아직 끝나서 이번 주기는 건너뜁니다.");
     return;
   }
-
   ticking = true;
   try {
     await simulateOnce();
@@ -216,7 +85,7 @@ process.on("SIGTERM", () => {
   void shutdown();
 });
 
-console.log("[시뮬레이터] 5초마다 단골과 신규 시청자 이벤트를 번갈아 넣습니다.");
+console.log("[시뮬레이터] 5초마다 후원 한 줄 요약을 넣습니다. 시청자 누적은 만들지 않습니다.");
 void tick();
 setInterval(() => {
   void tick();

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { isAnonymousDonor } from "@/lib/anonymous";
+import { broadcastElapsedSec } from "@/lib/broadcast-time";
 import {
   buildChzzkHandshake,
   buildChzzkPing,
@@ -12,8 +13,16 @@ import {
   parseChzzkFrame,
   type ChzzkInboundEvent,
 } from "@/lib/chzzk/frame";
-import { copyRoomChats, pushRoomChat } from "@/lib/chzzk/recent-chats";
 import type { ChzzkSession } from "@/lib/chzzk/session";
+import {
+  RADAR_INTERVAL_MS,
+  detectRadar,
+  messagesInWindow,
+  pushBaseline,
+  pushTimedChat,
+  type RadarSignal,
+  type TimedChat,
+} from "@/lib/chat-radar";
 
 export type ChzzkLinkStatus = "idle" | "connecting" | "live" | "offline" | "error";
 
@@ -28,6 +37,7 @@ const IDLE_STATE: ChzzkChatState = {
   liveTitle: null,
   errorMessage: null,
 };
+const SIGNAL_COOLDOWN_MS = 90_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -63,7 +73,7 @@ async function loadSession(channelId: string, signal: AbortSignal): Promise<Chzz
   return payload;
 }
 
-async function postEvent(event: ChzzkInboundEvent, recentChats: string[]): Promise<boolean> {
+async function postDonation(event: ChzzkInboundEvent, recentChats: string[]): Promise<void> {
   const response = await fetch("/api/events", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -73,40 +83,70 @@ async function postEvent(event: ChzzkInboundEvent, recentChats: string[]): Promi
       message: event.message,
       cheeseAmount: event.cheeseAmount,
       recentChats,
+      elapsedSec: broadcastElapsedSec(),
     }),
   });
-  return response.ok;
+  if (!response.ok) {
+    console.error("[치지직] 후원 요약을 저장하지 못했습니다.");
+  }
 }
 
-function handleInbound(event: ChzzkInboundEvent, recentChats: Map<string, string[]>): void {
-  const anonymous = isAnonymousDonor(event.userIdHash, event.nickname);
-  if (event.cheeseAmount <= 0) {
-    if (!anonymous) {
-      pushRoomChat(recentChats, event.message);
-    }
+function rememberChat(buffer: TimedChat[], event: ChzzkInboundEvent): void {
+  if (isAnonymousDonor(event.userIdHash, event.nickname)) {
     return;
   }
-  const chats = copyRoomChats(recentChats);
-  void postEvent(event, chats)
-    .then((ok) => {
-      if (!ok) {
-        console.error("[치지직] 후원 이벤트를 저장하지 못했습니다.");
-      }
-    })
-    .catch((error: unknown) => {
-      const text = error instanceof Error ? error.message : "후원 저장 실패";
-      console.error(`[치지직] ${text}`);
-    });
-  if (!anonymous) {
-    pushRoomChat(recentChats, event.message);
+  pushTimedChat(buffer, event.message, Date.now());
+}
+
+function handleInbound(event: ChzzkInboundEvent, buffer: TimedChat[]): void {
+  if (event.cheeseAmount <= 0) {
+    rememberChat(buffer, event);
+    return;
+  }
+  const recentChats = messagesInWindow(buffer, Date.now());
+  void postDonation(event, recentChats).catch((error: unknown) => {
+    const text = error instanceof Error ? error.message : "후원 저장 실패";
+    console.error(`[치지직] ${text}`);
+  });
+  rememberChat(buffer, event);
+}
+
+async function postRadar(signal: RadarSignal, messages: string[]): Promise<void> {
+  const response = await fetch("/api/radar", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      signal,
+      messages: messages.slice(-40),
+      elapsedSec: broadcastElapsedSec(),
+    }),
+  });
+  if (!response.ok) {
+    console.error("[레이더] 채팅 분석을 저장하지 못했습니다.");
   }
 }
 
-function waitForSocket(
-  session: ChzzkSession,
-  stopped: () => boolean,
-  recentChats: Map<string, string[]>,
-): Promise<void> {
+function scanRadar(buffer: TimedChat[], baselines: number[], lastFired: Map<RadarSignal, number>): void {
+  const now = Date.now();
+  const messages = messagesInWindow(buffer, now);
+  const signal = detectRadar(messages, baselines);
+  pushBaseline(baselines, messages.length);
+  if (!signal) {
+    return;
+  }
+  const firedAt = lastFired.get(signal) ?? 0;
+  if (now - firedAt < SIGNAL_COOLDOWN_MS) {
+    return;
+  }
+  lastFired.set(signal, now);
+  void postRadar(signal, messages).catch((error: unknown) => {
+    lastFired.delete(signal);
+    const text = error instanceof Error ? error.message : "레이더 실패";
+    console.error(`[레이더] ${text}`);
+  });
+}
+
+function waitForSocket(session: ChzzkSession, stopped: () => boolean, buffer: TimedChat[]): Promise<void> {
   return new Promise((resolve) => {
     const socket = new WebSocket(CHZZK_CHAT_URL);
     let settled = false;
@@ -139,7 +179,7 @@ function waitForSocket(
         socket.send(JSON.stringify(buildChzzkPong()));
       }
       for (const event of frame.events) {
-        handleInbound(event, recentChats);
+        handleInbound(event, buffer);
       }
     });
 
@@ -162,17 +202,33 @@ function waitForSocket(
 }
 
 /**
- * 브라우저에서 치지직 채팅 소켓에 붙는다.
- * 일반 채팅은 방 전체 최근 20개만 메모리에 두고, 치즈 후원만 서버로 보낸다.
- * enabled 가 꺼지면 소켓과 20초 핑을 정리한다.
+ * 브라우저에서 치지직 채팅에 붙는다.
+ * 일반 채팅은 최근 60초만 메모리에 두고, 30초마다 조건이 맞을 때만 레이더를 부른다.
+ * 치즈 후원만 서버에 한 줄 요약을 요청한다.
  */
 export function useChzzkChat(channelId: string, enabled: boolean): ChzzkChatState {
   const [state, setState] = useState<ChzzkChatState>(IDLE_STATE);
-  const recentChatsRef = useRef<Map<string, string[]>>(new Map());
+  const bufferRef = useRef<TimedChat[]>([]);
+  const baselinesRef = useRef<number[]>([]);
+  const lastFiredRef = useRef<Map<RadarSignal, number>>(new Map());
+
+  useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      scanRadar(bufferRef.current, baselinesRef.current, lastFiredRef.current);
+    }, RADAR_INTERVAL_MS);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [enabled]);
 
   useEffect(() => {
     const trimmed = channelId.trim();
-    recentChatsRef.current.clear();
+    bufferRef.current = [];
+    baselinesRef.current = [];
+    lastFiredRef.current.clear();
     if (!enabled || trimmed.length === 0) {
       return;
     }
@@ -189,7 +245,7 @@ export function useChzzkChat(channelId: string, enabled: boolean): ChzzkChatStat
           return;
         }
         setState({ status: "live", liveTitle: session.liveTitle, errorMessage: null });
-        await waitForSocket(session, () => stopped, recentChatsRef.current);
+        await waitForSocket(session, () => stopped, bufferRef.current);
         if (stopped) {
           return;
         }
