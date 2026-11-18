@@ -1,11 +1,27 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 type AuthMode = "login" | "signup";
+
+function subscribeToLocation(): () => void {
+  return () => undefined;
+}
+
+function hasSearchFlag(name: string, expected: string): boolean {
+  return new URLSearchParams(window.location.search).get(name) === expected;
+}
+
+function useSearchFlag(name: string, expected: string): boolean {
+  return useSyncExternalStore(
+    subscribeToLocation,
+    () => hasSearchFlag(name, expected),
+    () => false,
+  );
+}
 
 function koreanAuthError(message: string, mode: AuthMode): string {
   const text = message.toLowerCase();
@@ -53,13 +69,10 @@ export default function LoginPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [googleSubmitting, setGoogleSubmitting] = useState(false);
-
-  useEffect(() => {
-    const error = new URLSearchParams(window.location.search).get("error");
-    if (error === "google") {
-      setErrorMessage("Google 로그인에 실패했습니다. 다시 시도해 주세요.");
-    }
-  }, []);
+  const googleFailed = useSearchFlag("error", "google");
+  const idleNotice = useSearchFlag("reason", "idle");
+  const shownError =
+    errorMessage ?? (googleFailed ? "Google 로그인에 실패했습니다. 다시 시도해 주세요." : null);
 
   async function continueWithGoogle(): Promise<void> {
     if (submitting || googleSubmitting) {
@@ -142,6 +155,14 @@ export default function LoginPage() {
 
   return (
     <main className="mx-auto flex min-h-full w-full max-w-[430px] flex-col justify-center bg-black px-4 py-10 text-white">
+      {idleNotice ? (
+        <p
+          role="status"
+          className="mb-4 rounded-2xl border border-[#00FFA3]/40 bg-[#00FFA3]/10 px-4 py-3 text-sm font-bold leading-6 text-[#D7FFEF]"
+        >
+          장시간 미사용으로 안전하게 자동 로그아웃되었습니다.
+        </p>
+      ) : null}
       <h1 className="text-[1.85rem] font-extrabold tracking-tight">LoreKeeper</h1>
       <p className="mt-2 text-base font-semibold leading-6 text-[#AEB6C9]">
         방송 중 보는 시청자 브리핑. 계정으로 채널과 카드를 나눠 둡니다.
@@ -227,7 +248,7 @@ export default function LoginPage() {
           />
         </label>
 
-        {errorMessage ? <p className="mt-3 text-sm font-bold text-[#FFB4B4]">{errorMessage}</p> : null}
+        {shownError ? <p className="mt-3 text-sm font-bold text-[#FFB4B4]">{shownError}</p> : null}
         {notice ? <p className="mt-3 text-sm font-bold text-[#B6FFD8]">{notice}</p> : null}
 
         <button

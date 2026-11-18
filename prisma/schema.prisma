@@ -16,8 +16,12 @@ model User {
   aiCredits       Int        @default(50)
   minCheeseAmount Int        @default(1000) // 이 금액 미만 후원은 누적만 하고 브리핑하지 않는다
   enableFirstChat Boolean    @default(false) // 처음 등록된 시청자의 첫 채팅만 브리핑한다
-  streamTone      String     @default("친근한 반말")
-  streamContext   String? // 방송 컨셉 메모
+  streamTone         String   @default("친근한 반말")
+  streamSpeechLevel  String   @default("친근한 반말") // "친근한 반말" | "정중한 존댓말" | "반존대"
+  streamToneTags    String[] @default(["텐션 높음"]) // 함께 섞는 스타일 태그
+  streamHabit        String? // 입버릇이나 피할 말투
+  streamContext      String? // 방송 컨셉 메모
+  autoLogoutMinutes  Int      @default(0) // 0이면 자동 로그아웃을 쓰지 않는다
   createdAt      DateTime   @default(now())
   viewers        Viewer[]
   briefings      Briefing[]
