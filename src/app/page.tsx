@@ -4,36 +4,18 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useChzzkChat } from "@/hooks/useChzzkChat";
-import { useIdleLogout } from "@/hooks/useIdleLogout";
 import { ANONYMOUS_NICKNAME } from "@/lib/anonymous";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import {
-  compareBriefingCards,
+  compareLiveCards,
+  formatCumulativeCheese,
+  formatElapsed,
   isBriefingCard,
   isBriefingCardList,
+  isCardFaded,
   type BriefingCard,
 } from "@/lib/briefing-card";
-import {
-  CHEESE_PRESETS,
-  DEFAULT_MIN_CHEESE,
-  DEFAULT_SPEECH_LEVEL,
-  DEFAULT_TONE_TAGS,
-  isCheesePreset,
-  isLogoutMinutes,
-  isSpeechLevel,
-  isToneTag,
-  LOGOUT_LABELS,
-  LOGOUT_PRESETS,
-  MAX_STREAM_CONTEXT,
-  MAX_STREAM_HABIT,
-  SPEECH_LEVELS,
-  TONE_TAG_LABELS,
-  TONE_TAGS,
-  type CheesePreset,
-  type LogoutMinutes,
-  type SpeechLevel,
-  type ToneTag,
-} from "@/lib/stream-settings";
+import { CHEESE_PRESETS, DEFAULT_MIN_CHEESE, isCheesePreset, type CheesePreset } from "@/lib/stream-settings";
 
 const POLL_MS = 2_000;
 const TOAST_MS = 1_600;
@@ -55,18 +37,15 @@ function formatCount(value: number): string {
   return value.toLocaleString("ko-KR");
 }
 
-function loyaltyLabel(card: BriefingCard): string {
-  if (card.isAnonymous || !card.viewer) {
-    return "익명";
-  }
-  if (card.viewer.visitCount <= 1) {
-    return "첫후원";
-  }
-  return "단골";
-}
-
 function cardName(card: BriefingCard): string {
   return card.isAnonymous || !card.viewer ? ANONYMOUS_NICKNAME : card.viewer.nickname;
+}
+
+function memoryBadge(card: BriefingCard): string {
+  if (card.isAnonymous || !card.viewer) {
+    return "🕵️ 익명";
+  }
+  return `👑 누적 ${formatCumulativeCheese(card.viewer.totalCheese)} · ${card.viewer.visitCount}회`;
 }
 
 type SkipReason = "first-chat-off" | "known-viewer" | "below-minimum" | "anonymous-chat";
@@ -93,17 +72,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 interface AccountProfile {
   email: string;
   chzzkChannelId: string | null;
-  enableFirstChat: boolean;
   minCheeseAmount: CheesePreset;
-  streamSpeechLevel: SpeechLevel;
-  streamToneTags: ToneTag[];
-  streamHabit: string | null;
-  streamContext: string | null;
-  autoLogoutMinutes: LogoutMinutes;
-}
-
-function isToneTagList(value: unknown): value is ToneTag[] {
-  return Array.isArray(value) && value.every(isToneTag);
 }
 
 function isAccountProfile(value: unknown): value is AccountProfile {
@@ -111,18 +80,7 @@ function isAccountProfile(value: unknown): value is AccountProfile {
     return false;
   }
   const channelOk = value.chzzkChannelId === null || typeof value.chzzkChannelId === "string";
-  const habitOk = value.streamHabit === null || typeof value.streamHabit === "string";
-  const contextOk = value.streamContext === null || typeof value.streamContext === "string";
-  return (
-    channelOk &&
-    habitOk &&
-    contextOk &&
-    typeof value.enableFirstChat === "boolean" &&
-    isCheesePreset(value.minCheeseAmount) &&
-    isSpeechLevel(value.streamSpeechLevel) &&
-    isToneTagList(value.streamToneTags) &&
-    isLogoutMinutes(value.autoLogoutMinutes)
-  );
+  return channelOk && isCheesePreset(value.minCheeseAmount);
 }
 
 function readPostedBriefing(value: unknown): BriefingCard | null {
@@ -143,14 +101,9 @@ export default function HomePage() {
   const [channelId, setChannelId] = useState("");
   const [accountEmail, setAccountEmail] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [enableFirstChat, setEnableFirstChat] = useState(false);
   const [minCheeseAmount, setMinCheeseAmount] = useState<CheesePreset>(DEFAULT_MIN_CHEESE);
-  const [speechLevel, setSpeechLevel] = useState<SpeechLevel>(DEFAULT_SPEECH_LEVEL);
-  const [toneTags, setToneTags] = useState<ToneTag[]>([...DEFAULT_TONE_TAGS]);
-  const [streamHabit, setStreamHabit] = useState("");
-  const [streamContext, setStreamContext] = useState("");
-  const [autoLogoutMinutes, setAutoLogoutMinutes] = useState<LogoutMinutes>(0);
   const [savingSettings, setSavingSettings] = useState(false);
+  const [nowMs, setNowMs] = useState(0);
   const [chatEnabled, setChatEnabled] = useState(false);
   const [sending, setSending] = useState(false);
   const knownIds = useRef<Set<string>>(new Set());
@@ -159,10 +112,10 @@ export default function HomePage() {
   const wakeLock = useRef<WakeLockSentinel | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const settingsTouched = useRef(false);
-  const chat = useChzzkChat(channelId, chatEnabled, enableFirstChat);
+  const chat = useChzzkChat(channelId, chatEnabled);
 
   const applyCards = useCallback((nextCards: BriefingCard[]) => {
-    const sorted = [...nextCards].sort(compareBriefingCards);
+    const sorted = [...nextCards].sort((left, right) => compareLiveCards(left, right, Date.now()));
     if (!firstLoad.current) {
       const arrived = sorted.map((card) => card.id).filter((id) => !knownIds.current.has(id));
       if (arrived.length > 0) {
@@ -179,7 +132,7 @@ export default function HomePage() {
       const next = current.some((item) => item.id === card.id)
         ? current.map((item) => (item.id === card.id ? card : item))
         : [card, ...current];
-      next.sort(compareBriefingCards);
+      next.sort((left, right) => compareLiveCards(left, right, Date.now()));
       knownIds.current = new Set(next.map((item) => item.id));
       return next;
     });
@@ -247,13 +200,7 @@ export default function HomePage() {
         return;
       }
       setAccountEmail(payload.email);
-      setEnableFirstChat(payload.enableFirstChat);
       setMinCheeseAmount(payload.minCheeseAmount);
-      setSpeechLevel(payload.streamSpeechLevel);
-      setToneTags(payload.streamToneTags);
-      setStreamHabit(payload.streamHabit ?? "");
-      setStreamContext(payload.streamContext ?? "");
-      setAutoLogoutMinutes(payload.autoLogoutMinutes);
       if (payload.chzzkChannelId) {
         setChannelId((current) => (current.trim().length > 0 ? current : payload.chzzkChannelId ?? ""));
       } else if (!settingsTouched.current) {
@@ -319,6 +266,18 @@ export default function HomePage() {
     };
   }, []);
 
+  useEffect(() => {
+    const tick = (): void => {
+      setNowMs(Date.now());
+    };
+    const first = window.setTimeout(tick, 0);
+    const timer = window.setInterval(tick, 10_000);
+    return () => {
+      window.clearTimeout(first);
+      window.clearInterval(timer);
+    };
+  }, []);
+
   const showToast = useCallback((message: string) => {
     setToast(message);
     if (toastTimer.current) {
@@ -329,13 +288,7 @@ export default function HomePage() {
 
   function applyProfile(payload: AccountProfile): void {
     setAccountEmail(payload.email);
-    setEnableFirstChat(payload.enableFirstChat);
     setMinCheeseAmount(payload.minCheeseAmount);
-    setSpeechLevel(payload.streamSpeechLevel);
-    setToneTags(payload.streamToneTags);
-    setStreamHabit(payload.streamHabit ?? "");
-    setStreamContext(payload.streamContext ?? "");
-    setAutoLogoutMinutes(payload.autoLogoutMinutes);
     setChannelId(payload.chzzkChannelId ?? "");
   }
 
@@ -347,13 +300,7 @@ export default function HomePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           chzzkChannelId: channelId.trim(),
-          enableFirstChat,
           minCheeseAmount,
-          streamSpeechLevel: speechLevel,
-          streamToneTags: toneTags,
-          streamHabit: streamHabit.trim(),
-          streamContext: streamContext.trim(),
-          autoLogoutMinutes,
         }),
       });
       const payload: unknown = await response.json().catch(() => null);
@@ -374,22 +321,14 @@ export default function HomePage() {
     }
   }
 
-  async function logout(reason?: "idle"): Promise<void> {
+  async function logout(): Promise<void> {
     const supabase = createSupabaseBrowserClient();
     if (supabase) {
       await supabase.auth.signOut();
     }
-    router.push(reason === "idle" ? "/login?reason=idle" : "/login");
+    router.push("/login");
     router.refresh();
   }
-
-  useIdleLogout({
-    minutes: autoLogoutMinutes,
-    paused: chatEnabled || wakeOn,
-    onIdle: () => {
-      void logout("idle");
-    },
-  });
 
   async function toggleWake(): Promise<void> {
     if (!("wakeLock" in navigator)) {
@@ -405,7 +344,7 @@ export default function HomePage() {
     await requestWakeLock();
   }
 
-  async function updateCard(id: string, patch: { isPinned?: boolean; isDone?: boolean }): Promise<void> {
+  async function updateCard(id: string, patch: { isPinned: boolean }): Promise<void> {
     const response = await fetch(`/api/briefings/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -421,26 +360,9 @@ export default function HomePage() {
     }
     setCards((current) => {
       const next = current.map((card) => (card.id === payload.id ? payload : card));
-      next.sort(compareBriefingCards);
+      next.sort((left, right) => compareLiveCards(left, right, Date.now()));
       return next;
     });
-  }
-
-  async function copyReply(reply: string): Promise<void> {
-    try {
-      await navigator.clipboard.writeText(reply);
-    } catch {
-      const field = document.createElement("textarea");
-      field.value = reply;
-      field.setAttribute("readonly", "true");
-      field.style.position = "fixed";
-      field.style.left = "-9999px";
-      document.body.append(field);
-      field.select();
-      document.execCommand("copy");
-      field.remove();
-    }
-    showToast("복사됨!");
   }
 
   async function sendSimulator(event: SimulatorEvent): Promise<void> {
@@ -514,11 +436,7 @@ export default function HomePage() {
   const statusDot = statusLive ? "bg-[#00FFA3]" : statusText.includes("중") ? "bg-[#8B93A7]" : "bg-[#FF5C5C]";
 
   return (
-    <div
-      className="mx-auto flex min-h-full w-full max-w-[430px] flex-col bg-[#0E0F11] text-white"
-      data-idle-minutes={autoLogoutMinutes}
-      data-idle-paused={chatEnabled || wakeOn ? "true" : "false"}
-    >
+    <div className="mx-auto flex min-h-full w-full max-w-[430px] flex-col bg-[#0E0F11] text-white">
       <header className="sticky top-0 z-20 border-b border-white/10 bg-[#0E0F11] px-4 pb-3 pt-4">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
@@ -585,7 +503,7 @@ export default function HomePage() {
         {chat.errorMessage ? <p className="mt-1 text-sm font-semibold text-[#FFB4B4]">{chat.errorMessage}</p> : null}
       </header>
 
-      <main className="flex flex-1 flex-col gap-3 px-4 py-4 pb-36">
+      <main className="flex flex-1 flex-col gap-3 px-4 py-4 pb-8">
         {settingsOpen ? (
           <form
             className="rounded-[22px] border border-white/10 bg-[#16181C] px-4 py-4"
@@ -611,22 +529,6 @@ export default function HomePage() {
               />
             </label>
 
-            <div className="mt-4 flex items-center justify-between gap-3">
-              <p className="text-sm font-bold text-[#AEB6C9]">첫 채팅 브리핑</p>
-              <button
-                type="button"
-                aria-pressed={enableFirstChat}
-                onClick={() => {
-                  setEnableFirstChat((current) => !current);
-                }}
-                className={`min-h-12 rounded-full px-4 text-sm font-extrabold ${
-                  enableFirstChat ? "bg-[#00FFA3] text-[#090A0B]" : "border border-white/10 bg-[#0E0F11] text-[#D7DDEA]"
-                }`}
-              >
-                {enableFirstChat ? "켜짐" : "꺼짐"}
-              </button>
-            </div>
-
             <p className="mt-4 text-sm font-bold text-[#AEB6C9]">최소 치즈 금액</p>
             <div className="mt-2 grid grid-cols-2 gap-2">
               {CHEESE_PRESETS.map((preset) => (
@@ -648,104 +550,6 @@ export default function HomePage() {
               ))}
             </div>
 
-            <p className="mt-4 text-sm font-bold text-[#AEB6C9]">기본 어미</p>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {SPEECH_LEVELS.map((level) => (
-                <button
-                  key={level}
-                  type="button"
-                  aria-pressed={speechLevel === level}
-                  onClick={() => {
-                    setSpeechLevel(level);
-                  }}
-                  className={`min-h-12 rounded-full px-4 text-sm font-extrabold ${
-                    speechLevel === level
-                      ? "bg-[#00FFA3] text-[#090A0B]"
-                      : "border border-white/10 bg-[#0E0F11] text-[#D7DDEA]"
-                  }`}
-                >
-                  {level}
-                </button>
-              ))}
-            </div>
-
-            <p className="mt-4 text-sm font-bold text-[#AEB6C9]">스타일 조합</p>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {TONE_TAGS.map((tag) => {
-                const selected = toneTags.includes(tag);
-                return (
-                  <button
-                    key={tag}
-                    type="button"
-                    aria-pressed={selected}
-                    onClick={() => {
-                      setToneTags((current) =>
-                        current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag],
-                      );
-                    }}
-                    className={`min-h-12 rounded-full px-4 text-sm font-extrabold ${
-                      selected
-                        ? "bg-[#00FFA3] text-[#090A0B]"
-                        : "border border-white/10 bg-[#0E0F11] text-[#D7DDEA]"
-                    }`}
-                  >
-                    {TONE_TAG_LABELS[tag]}
-                  </button>
-                );
-              })}
-            </div>
-
-            <label className="mt-4 block text-sm font-bold text-[#AEB6C9]" htmlFor="stream-habit">
-              말투 디테일
-              <textarea
-                id="stream-habit"
-                value={streamHabit}
-                maxLength={MAX_STREAM_HABIT}
-                onChange={(event) => {
-                  setStreamHabit(event.target.value);
-                }}
-                placeholder={'"~하구만" 어미 사용, 과한 감탄사 자제'}
-                rows={2}
-                className="mt-1 w-full rounded-2xl border border-white/10 bg-[#0E0F11] px-4 py-3 text-base font-semibold leading-6 text-white outline-none placeholder:text-[#6E768A]"
-              />
-            </label>
-
-            <p className="mt-4 text-sm font-bold text-[#AEB6C9]">미사용 자동 로그아웃</p>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {LOGOUT_PRESETS.map((minutes) => (
-                <button
-                  key={minutes}
-                  type="button"
-                  aria-pressed={autoLogoutMinutes === minutes}
-                  onClick={() => {
-                    setAutoLogoutMinutes(minutes);
-                  }}
-                  className={`min-h-12 rounded-full px-4 text-sm font-extrabold ${
-                    autoLogoutMinutes === minutes
-                      ? "bg-[#00FFA3] text-[#090A0B]"
-                      : "border border-white/10 bg-[#0E0F11] text-[#D7DDEA]"
-                  }`}
-                >
-                  {minutes === 0 ? "끄기(기본)" : LOGOUT_LABELS[minutes]}
-                </button>
-              ))}
-            </div>
-
-            <label className="mt-4 block text-sm font-bold text-[#AEB6C9]" htmlFor="stream-context">
-              방송 컨셉 메모
-              <textarea
-                id="stream-context"
-                value={streamContext}
-                maxLength={MAX_STREAM_CONTEXT}
-                onChange={(event) => {
-                  setStreamContext(event.target.value);
-                }}
-                placeholder="오늘 콘셉트, 호칭, 피하고 싶은 말"
-                rows={3}
-                className="mt-1 w-full rounded-2xl border border-white/10 bg-[#0E0F11] px-4 py-3 text-base font-semibold leading-6 text-white outline-none placeholder:text-[#6E768A]"
-              />
-            </label>
-
             <button
               type="submit"
               disabled={savingSettings}
@@ -753,145 +557,121 @@ export default function HomePage() {
             >
               {savingSettings ? "저장 중" : "설정 저장"}
             </button>
+
+            <div className="mt-5 border-t border-white/10 pt-4">
+              <p className="text-sm font-extrabold text-[#D7DDEA]">🧪 시뮬레이터</p>
+              <div className="mt-2 grid grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  disabled={sending}
+                  onClick={() => {
+                    void sendSimulator({
+                      userIdHash: REGULAR_HASH,
+                      nickname: "단골팬",
+                      message: "오늘도 치즈 보낼게",
+                      cheeseAmount: REGULAR_CHEESE,
+                      recentChats: ["보스 또 쓰러졌다", "ㅋㅋㅋㅋ 위로해 줘"],
+                    });
+                  }}
+                  className="min-h-12 rounded-2xl bg-[#FFB800]/15 px-1 text-xs font-extrabold text-[#FFB800] disabled:opacity-60"
+                >
+                  단골 1만 치즈
+                </button>
+                <button
+                  type="button"
+                  disabled={sending}
+                  onClick={() => {
+                    void sendSimulator({
+                      userIdHash: `user_new_${crypto.randomUUID()}`,
+                      nickname: "새시청자",
+                      message: "처음 후원해요",
+                      cheeseAmount: 1_000,
+                      recentChats: ["처음 왔어요"],
+                    });
+                  }}
+                  className="min-h-12 rounded-2xl bg-[#00FFA3]/10 px-1 text-xs font-extrabold text-[#00FFA3] disabled:opacity-60"
+                >
+                  뉴비 첫 후원
+                </button>
+                <button
+                  type="button"
+                  disabled={sending}
+                  onClick={() => {
+                    void sendSimulator({
+                      userIdHash: "anonymous",
+                      nickname: ANONYMOUS_NICKNAME,
+                      message: "응원합니다",
+                      cheeseAmount: 10_000,
+                      recentChats: ["채팅창이 조용하다"],
+                    });
+                  }}
+                  className="min-h-12 rounded-2xl border border-white/10 bg-[#0E0F11] px-1 text-xs font-extrabold text-white disabled:opacity-60"
+                >
+                  익명 1만 치즈
+                </button>
+              </div>
+            </div>
           </form>
         ) : null}
         {cards.length === 0 ? (
           <p className="rounded-[20px] border border-white/10 bg-[#16181C] px-5 py-8 text-lg leading-7 text-[#C4CAD8]">
             {pollStatus === "offline"
-              ? "브리핑을 불러오지 못했습니다. 잠시 후 다시 시도합니다."
-              : "아직 올라온 브리핑이 없습니다. 후원이나 첫 방문이 오면 여기에 뜹니다."}
+              ? "상황판을 불러오지 못했습니다. 잠시 후 다시 시도합니다."
+              : "아직 올라온 후원이 없습니다. 치즈가 오면 사연과 상황이 여기에 뜹니다."}
           </p>
         ) : (
-          cards.map((card) => (
-            <article
-              key={card.id}
-              className={`rounded-[22px] border bg-[#16181C] px-3 py-3 ${
-                card.isPinned ? "border-[#FFB800]/70" : freshIds.has(card.id) ? "border-[#00FFA3]" : "border-white/10"
-              } ${card.isDone ? "opacity-50" : ""}`}
-            >
-              <div className="flex items-center gap-2">
-                <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                  <p className="truncate text-base font-bold">{cardName(card)}</p>
-                  <span
-                    className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-extrabold ${
-                      loyaltyLabel(card) === "단골"
-                        ? "bg-[#FFB800]/15 text-[#FFB800]"
-                        : loyaltyLabel(card) === "익명"
-                          ? "bg-white/10 text-[#D7DDEA]"
-                          : "bg-[#00FFA3]/15 text-[#00FFA3]"
-                    }`}
-                  >
-                    {loyaltyLabel(card)}
-                  </span>
-                </div>
-                <div className="flex shrink-0 gap-1">
-                  <button
-                    type="button"
-                    aria-pressed={card.isPinned}
-                    onClick={() => {
-                      void updateCard(card.id, { isPinned: !card.isPinned });
-                    }}
-                    className={`min-h-10 rounded-xl px-2 text-sm font-bold ${
-                      card.isPinned ? "bg-[#FFB800]/15 text-[#FFB800]" : "bg-[#0E0F11] text-[#D7DDEA]"
-                    }`}
-                  >
-                    {card.isPinned ? "📌 고정됨" : "📌 고정"}
-                  </button>
-                  <button
-                    type="button"
-                    aria-pressed={card.isDone}
-                    onClick={() => {
-                      void updateCard(card.id, { isDone: !card.isDone });
-                    }}
-                    className={`min-h-10 rounded-xl px-2 text-sm font-bold ${
-                      card.isDone ? "bg-[#00FFA3]/15 text-[#00FFA3]" : "bg-[#0E0F11] text-[#D7DDEA]"
-                    }`}
-                  >
-                    {card.isDone ? "✓ 완료됨" : "✓ 완료"}
-                  </button>
-                </div>
-              </div>
-              {card.cheeseAmount > 0 ? (
-                <p className="mt-2 text-sm font-extrabold text-[#FFB800]">{formatCount(card.cheeseAmount)}치즈</p>
-              ) : null}
-
-              <p className="mt-2 text-lg font-bold leading-snug text-white">{card.summarySnapshot}</p>
-
-              <div className="mt-3 flex flex-col gap-2">
-                {card.suggestedReplies.slice(0, 2).map((reply, index) => (
-                  <button
-                    key={`${card.id}-${index}`}
-                    type="button"
-                    onClick={() => {
-                      void copyReply(reply);
-                    }}
-                    className="min-h-12 rounded-2xl border border-[#00FFA3]/40 bg-[#00FFA3]/5 px-4 py-3 text-left text-base font-bold leading-6 text-white"
-                  >
-                    {reply}
-                  </button>
-                ))}
-              </div>
-            </article>
-          ))
+          [...cards]
+            .sort((left, right) => compareLiveCards(left, right, nowMs))
+            .map((card) => {
+              const faded = isCardFaded(card, nowMs);
+              return (
+                <article
+                  key={card.id}
+                  className={`rounded-[22px] border bg-[#16181C] px-3 py-3 ${
+                    card.isPinned ? "border-[#FFB800]/70" : freshIds.has(card.id) ? "border-[#00FFA3]" : "border-white/10"
+                  } ${faded ? "opacity-40" : ""}`}
+                >
+                  <div className="flex items-start gap-2">
+                    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 gap-y-1">
+                      <p className="max-w-full truncate text-base font-bold">{cardName(card)}</p>
+                      <p className="text-sm font-extrabold text-[#FFB800]">+{formatCount(card.cheeseAmount)} 치즈</p>
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-xs font-extrabold ${
+                          card.isAnonymous ? "bg-white/10 text-[#D7DDEA]" : "bg-[#FFB800]/15 text-[#FFB800]"
+                        }`}
+                      >
+                        {memoryBadge(card)}
+                      </span>
+                      <span className="text-xs font-semibold text-[#8B93A7]">{formatElapsed(card.createdAt, nowMs)}</span>
+                    </div>
+                    <button
+                      type="button"
+                      aria-label={card.isPinned ? "고정 해제" : "고정"}
+                      aria-pressed={card.isPinned}
+                      onClick={() => {
+                        void updateCard(card.id, { isPinned: !card.isPinned });
+                      }}
+                      className={`min-h-8 min-w-8 shrink-0 rounded-xl text-sm ${
+                        card.isPinned ? "bg-[#FFB800]/15" : "bg-[#0E0F11]"
+                      }`}
+                    >
+                      📌
+                    </button>
+                  </div>
+                  <p className="mt-3 rounded-2xl border border-[#00FFA3]/40 bg-[#00FFA3]/5 px-3 py-2 text-sm font-bold leading-6 text-[#D7FFEF]">
+                    🧠 기억: {card.viewerStory || "기록 없음"}
+                  </p>
+                  <p className="mt-3 text-lg font-bold leading-snug text-white">⚡ 상황: {card.contextSummary}</p>
+                </article>
+              );
+            })
         )}
       </main>
-
-      <div className="fixed bottom-0 left-1/2 z-20 w-full max-w-[430px] -translate-x-1/2 border-t border-white/10 bg-[#0E0F11] px-4 py-3">
-        <p className="text-sm font-extrabold text-[#D7DDEA]">🧪 시뮬레이터</p>
-        <div className="mt-2 grid grid-cols-3 gap-2">
-          <button
-            type="button"
-            disabled={sending}
-            onClick={() => {
-              void sendSimulator({
-                userIdHash: REGULAR_HASH,
-                nickname: "단골팬",
-                message: "오늘도 치즈 보낼게",
-                cheeseAmount: REGULAR_CHEESE,
-              });
-            }}
-            className="min-h-12 rounded-2xl bg-[#FFB800]/15 px-1 text-xs font-extrabold text-[#FFB800] disabled:opacity-60"
-          >
-            단골 1만 치즈
-          </button>
-          <button
-            type="button"
-            disabled={sending}
-            onClick={() => {
-              void sendSimulator({
-                userIdHash: `user_new_${crypto.randomUUID()}`,
-                nickname: "새시청자",
-                message: "처음 들렀어요",
-                cheeseAmount: 0,
-                recentChats: ["처음 들렀어요"],
-              });
-            }}
-            className="min-h-12 rounded-2xl bg-[#00FFA3]/10 px-1 text-xs font-extrabold text-[#00FFA3] disabled:opacity-60"
-          >
-            뉴비 첫 채팅
-          </button>
-          <button
-            type="button"
-            disabled={sending}
-            onClick={() => {
-              void sendSimulator({
-                userIdHash: "anonymous",
-                nickname: ANONYMOUS_NICKNAME,
-                message: "응원합니다",
-                cheeseAmount: 10_000,
-              });
-            }}
-            className="min-h-12 rounded-2xl border border-white/10 bg-[#16181C] px-1 text-xs font-extrabold text-white disabled:opacity-60"
-          >
-            익명 1만 치즈
-          </button>
-        </div>
-      </div>
 
       {toast ? (
         <div
           role="status"
-          className="fixed bottom-28 left-1/2 z-30 -translate-x-1/2 rounded-full bg-[#00FFA3] px-5 py-3 text-base font-extrabold text-[#090A0B]"
+          className="fixed bottom-6 left-1/2 z-30 -translate-x-1/2 rounded-full bg-[#00FFA3] px-5 py-3 text-base font-extrabold text-[#090A0B]"
         >
           {toast}
         </div>

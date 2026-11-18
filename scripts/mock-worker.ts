@@ -2,14 +2,12 @@ import "dotenv/config";
 
 import { randomInt, randomUUID } from "node:crypto";
 
-import type { Prisma } from "@prisma/client";
-
 import type { BriefingTriggerType } from "@/lib/llm/briefing";
 import { generateBriefing } from "@/lib/llm/briefing";
 import { prisma } from "@/lib/prisma";
 
 const TICK_MS = 5_000;
-const MAX_RECENT_CHATS = 15;
+const MAX_RECENT_CHATS = 20;
 const MOCK_USER_ID = "00000000-0000-4000-8000-000000000001";
 const recentByHash = new Map<string, string[]>();
 
@@ -93,34 +91,24 @@ function rollEvent(): { message: string; cheeseAmount: number } {
   };
 }
 
-function readReplies(value: Prisma.JsonValue): string[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value.filter((item): item is string => typeof item === "string");
-}
-
 function printBriefing(params: {
   nickname: string;
   userIdHash: string;
   triggerType: BriefingTriggerType;
-  summary: string;
-  suggestedReplies: string[];
+  viewerStory: string;
+  contextSummary: string;
   cheeseAmount: number;
   totalCheese: number;
   visitCount: number;
 }): void {
-  console.log("──────── 브리핑 ────────");
+  console.log("──────── 상황 ────────");
   console.log(`시청자: ${params.nickname} (${params.userIdHash})`);
   console.log(
     `트리거: ${params.triggerType} | 이번 치즈 ${params.cheeseAmount} | 누적 ${params.totalCheese} | 방문 ${params.visitCount}`,
   );
-  console.log(`요약: ${params.summary}`);
-  console.log("추천 멘트:");
-  for (const reply of params.suggestedReplies) {
-    console.log(`- ${reply}`);
-  }
-  console.log("────────────────────────");
+  console.log(`기억: ${params.viewerStory}`);
+  console.log(`상황: ${params.contextSummary}`);
+  console.log("──────────────────────");
 }
 
 async function simulateOnce(): Promise<void> {
@@ -158,21 +146,11 @@ async function simulateOnce(): Promise<void> {
     recent.splice(0, recent.length - MAX_RECENT_CHATS);
   }
   recentByHash.set(viewer.userIdHash, recent);
-  const isFirstChat = viewer.visitCount === 1;
-
   console.log(
     `[이벤트] ${viewer.nickname} (${viewer.userIdHash}) | 방문 ${viewer.visitCount} | 누적 치즈 ${viewer.totalCheese} | ${event.cheeseAmount > 0 ? `치즈 ${event.cheeseAmount}` : "일반 채팅"} | ${event.message}`,
   );
 
-  // 후원이 있거나, 방금 DB에 처음 등록된 시청자의 첫 채팅일 때만 브리핑한다.
-  let triggerType: BriefingTriggerType | null = null;
-  if (event.cheeseAmount > 0) {
-    triggerType = "CHEESE";
-  } else if (isFirstChat) {
-    triggerType = "NEW_VIEWER";
-  }
-
-  if (!triggerType) {
+  if (event.cheeseAmount <= 0) {
     return;
   }
 
@@ -183,17 +161,13 @@ async function simulateOnce(): Promise<void> {
       nickname: viewer.nickname,
       totalCheese: viewer.totalCheese,
       visitCount: viewer.visitCount,
-      aiSummary: viewer.aiSummary,
+      storyMemo: viewer.storyMemo,
       isAnonymous: false,
     },
     recentChats: (recentByHash.get(viewer.userIdHash) ?? []).map((message) => ({ message })),
-    triggerType,
+    triggerType: "CHEESE",
     triggerMessage: event.message,
     cheeseAmount: event.cheeseAmount,
-    streamSpeechLevel: "친근한 반말",
-    streamToneTags: ["텐션 높음"],
-    streamHabit: null,
-    streamContext: null,
   });
 
   if (!briefing) {
@@ -204,9 +178,9 @@ async function simulateOnce(): Promise<void> {
   printBriefing({
     nickname: viewer.nickname,
     userIdHash: viewer.userIdHash,
-    triggerType,
-    summary: briefing.summarySnapshot,
-    suggestedReplies: readReplies(briefing.suggestedReplies),
+    triggerType: "CHEESE",
+    viewerStory: briefing.viewerStory ?? "",
+    contextSummary: briefing.contextSummary ?? "",
     cheeseAmount: briefing.cheeseAmount,
     totalCheese: viewer.totalCheese,
     visitCount: viewer.visitCount,

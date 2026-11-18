@@ -37,29 +37,40 @@ async function main(): Promise<void> {
   }
 
   await dropLegacyTables();
+  await keepStoryColumns();
   execFileSync("prisma", ["db", "push", "--accept-data-loss"], { stdio: "inherit" });
-  await backfillSpeechSettings();
 }
 
-/** 예전 말투 한 칸을 아직 손대지 않은 계정에만 새 어미·태그로 옮긴다. */
-async function backfillSpeechSettings(): Promise<void> {
+/** 예전 요약이 있으면 상황 카드와 시청자 사연으로 옮긴 뒤 스키마를 맞춘다. */
+async function keepStoryColumns(): Promise<void> {
   const prisma = new PrismaClient();
   try {
-    await prisma.$executeRawUnsafe(`
-      UPDATE "User"
-      SET "streamSpeechLevel" = "streamTone"
-      WHERE "streamTone" IN ('친근한 반말', '정중한 존댓말')
-        AND "streamSpeechLevel" = '친근한 반말'
-        AND "streamTone" <> '친근한 반말'
-        AND "streamToneTags" = ARRAY['텐션 높음']::text[]
-    `);
-    await prisma.$executeRawUnsafe(`
-      UPDATE "User"
-      SET "streamToneTags" = ARRAY['시크·무심']::text[]
-      WHERE "streamTone" = '담백한 진행'
-        AND "streamSpeechLevel" = '친근한 반말'
-        AND "streamToneTags" = ARRAY['텐션 높음']::text[]
-    `);
+    const columns = await prisma.$queryRaw<Array<{ table_name: string; column_name: string }>>`
+      SELECT table_name, column_name
+      FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name IN ('Viewer', 'Briefing')
+    `;
+    const has = (table: string, column: string): boolean =>
+      columns.some((row) => row.table_name === table && row.column_name === column);
+
+    if (has("Viewer", "aiSummary") && !has("Viewer", "storyMemo")) {
+      await prisma.$executeRawUnsafe('ALTER TABLE "Viewer" ADD COLUMN "storyMemo" TEXT');
+      await prisma.$executeRawUnsafe(
+        'UPDATE "Viewer" SET "storyMemo" = "aiSummary" WHERE "storyMemo" IS NULL AND "aiSummary" IS NOT NULL',
+      );
+    }
+    if (has("Briefing", "summarySnapshot") && !has("Briefing", "contextSummary")) {
+      await prisma.$executeRawUnsafe('ALTER TABLE "Briefing" ADD COLUMN "contextSummary" TEXT');
+      await prisma.$executeRawUnsafe(
+        'UPDATE "Briefing" SET "contextSummary" = "summarySnapshot" WHERE "contextSummary" IS NULL',
+      );
+    }
+    if (!has("Briefing", "viewerStory") && has("Briefing", "id")) {
+      await prisma.$executeRawUnsafe('ALTER TABLE "Briefing" ADD COLUMN "viewerStory" TEXT');
+      await prisma.$executeRawUnsafe(
+        `UPDATE "Briefing" SET "viewerStory" = '익명 후원' WHERE "viewerId" IS NULL AND "viewerStory" IS NULL`,
+      );
+    }
   } finally {
     await prisma.$disconnect();
   }
