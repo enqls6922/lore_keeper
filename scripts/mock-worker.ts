@@ -190,7 +190,9 @@ async function simulateOnce(): Promise<void> {
     triggerType,
     triggerMessage: event.message,
     cheeseAmount: event.cheeseAmount,
-    streamTone: "친근한 반말",
+    streamSpeechLevel: "친근한 반말",
+    streamToneTags: ["텐션 높음"],
+    streamHabit: null,
     streamContext: null,
   });
 

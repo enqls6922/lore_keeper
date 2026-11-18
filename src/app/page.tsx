@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useChzzkChat } from "@/hooks/useChzzkChat";
+import { useIdleLogout } from "@/hooks/useIdleLogout";
 import { ANONYMOUS_NICKNAME } from "@/lib/anonymous";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import {
@@ -15,13 +16,23 @@ import {
 import {
   CHEESE_PRESETS,
   DEFAULT_MIN_CHEESE,
-  DEFAULT_STREAM_TONE,
+  DEFAULT_SPEECH_LEVEL,
+  DEFAULT_TONE_TAGS,
   isCheesePreset,
-  isStreamTone,
+  isLogoutMinutes,
+  isSpeechLevel,
+  isToneTag,
+  LOGOUT_LABELS,
+  LOGOUT_PRESETS,
   MAX_STREAM_CONTEXT,
-  STREAM_TONES,
+  MAX_STREAM_HABIT,
+  SPEECH_LEVELS,
+  TONE_TAG_LABELS,
+  TONE_TAGS,
   type CheesePreset,
-  type StreamTone,
+  type LogoutMinutes,
+  type SpeechLevel,
+  type ToneTag,
 } from "@/lib/stream-settings";
 
 const POLL_MS = 2_000;
@@ -84,8 +95,15 @@ interface AccountProfile {
   chzzkChannelId: string | null;
   enableFirstChat: boolean;
   minCheeseAmount: CheesePreset;
-  streamTone: StreamTone;
+  streamSpeechLevel: SpeechLevel;
+  streamToneTags: ToneTag[];
+  streamHabit: string | null;
   streamContext: string | null;
+  autoLogoutMinutes: LogoutMinutes;
+}
+
+function isToneTagList(value: unknown): value is ToneTag[] {
+  return Array.isArray(value) && value.every(isToneTag);
 }
 
 function isAccountProfile(value: unknown): value is AccountProfile {
@@ -93,13 +111,17 @@ function isAccountProfile(value: unknown): value is AccountProfile {
     return false;
   }
   const channelOk = value.chzzkChannelId === null || typeof value.chzzkChannelId === "string";
+  const habitOk = value.streamHabit === null || typeof value.streamHabit === "string";
   const contextOk = value.streamContext === null || typeof value.streamContext === "string";
   return (
     channelOk &&
+    habitOk &&
     contextOk &&
     typeof value.enableFirstChat === "boolean" &&
     isCheesePreset(value.minCheeseAmount) &&
-    isStreamTone(value.streamTone)
+    isSpeechLevel(value.streamSpeechLevel) &&
+    isToneTagList(value.streamToneTags) &&
+    isLogoutMinutes(value.autoLogoutMinutes)
   );
 }
 
@@ -123,8 +145,11 @@ export default function HomePage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [enableFirstChat, setEnableFirstChat] = useState(false);
   const [minCheeseAmount, setMinCheeseAmount] = useState<CheesePreset>(DEFAULT_MIN_CHEESE);
-  const [streamTone, setStreamTone] = useState<StreamTone>(DEFAULT_STREAM_TONE);
+  const [speechLevel, setSpeechLevel] = useState<SpeechLevel>(DEFAULT_SPEECH_LEVEL);
+  const [toneTags, setToneTags] = useState<ToneTag[]>([...DEFAULT_TONE_TAGS]);
+  const [streamHabit, setStreamHabit] = useState("");
   const [streamContext, setStreamContext] = useState("");
+  const [autoLogoutMinutes, setAutoLogoutMinutes] = useState<LogoutMinutes>(0);
   const [savingSettings, setSavingSettings] = useState(false);
   const [chatEnabled, setChatEnabled] = useState(false);
   const [sending, setSending] = useState(false);
@@ -224,8 +249,11 @@ export default function HomePage() {
       setAccountEmail(payload.email);
       setEnableFirstChat(payload.enableFirstChat);
       setMinCheeseAmount(payload.minCheeseAmount);
-      setStreamTone(payload.streamTone);
+      setSpeechLevel(payload.streamSpeechLevel);
+      setToneTags(payload.streamToneTags);
+      setStreamHabit(payload.streamHabit ?? "");
       setStreamContext(payload.streamContext ?? "");
+      setAutoLogoutMinutes(payload.autoLogoutMinutes);
       if (payload.chzzkChannelId) {
         setChannelId((current) => (current.trim().length > 0 ? current : payload.chzzkChannelId ?? ""));
       } else if (!settingsTouched.current) {
@@ -303,8 +331,11 @@ export default function HomePage() {
     setAccountEmail(payload.email);
     setEnableFirstChat(payload.enableFirstChat);
     setMinCheeseAmount(payload.minCheeseAmount);
-    setStreamTone(payload.streamTone);
+    setSpeechLevel(payload.streamSpeechLevel);
+    setToneTags(payload.streamToneTags);
+    setStreamHabit(payload.streamHabit ?? "");
     setStreamContext(payload.streamContext ?? "");
+    setAutoLogoutMinutes(payload.autoLogoutMinutes);
     setChannelId(payload.chzzkChannelId ?? "");
   }
 
@@ -318,8 +349,11 @@ export default function HomePage() {
           chzzkChannelId: channelId.trim(),
           enableFirstChat,
           minCheeseAmount,
-          streamTone,
+          streamSpeechLevel: speechLevel,
+          streamToneTags: toneTags,
+          streamHabit: streamHabit.trim(),
           streamContext: streamContext.trim(),
+          autoLogoutMinutes,
         }),
       });
       const payload: unknown = await response.json().catch(() => null);
@@ -340,14 +374,22 @@ export default function HomePage() {
     }
   }
 
-  async function logout(): Promise<void> {
+  async function logout(reason?: "idle"): Promise<void> {
     const supabase = createSupabaseBrowserClient();
     if (supabase) {
       await supabase.auth.signOut();
     }
-    router.push("/login");
+    router.push(reason === "idle" ? "/login?reason=idle" : "/login");
     router.refresh();
   }
+
+  useIdleLogout({
+    minutes: autoLogoutMinutes,
+    paused: chatEnabled || wakeOn,
+    onIdle: () => {
+      void logout("idle");
+    },
+  });
 
   async function toggleWake(): Promise<void> {
     if (!("wakeLock" in navigator)) {
@@ -472,7 +514,11 @@ export default function HomePage() {
   const statusDot = statusLive ? "bg-[#00FFA3]" : statusText.includes("중") ? "bg-[#8B93A7]" : "bg-[#FF5C5C]";
 
   return (
-    <div className="mx-auto flex min-h-full w-full max-w-[430px] flex-col bg-[#0E0F11] text-white">
+    <div
+      className="mx-auto flex min-h-full w-full max-w-[430px] flex-col bg-[#0E0F11] text-white"
+      data-idle-minutes={autoLogoutMinutes}
+      data-idle-paused={chatEnabled || wakeOn ? "true" : "false"}
+    >
       <header className="sticky top-0 z-20 border-b border-white/10 bg-[#0E0F11] px-4 pb-3 pt-4">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
@@ -602,25 +648,88 @@ export default function HomePage() {
               ))}
             </div>
 
-            <label className="mt-4 block text-sm font-bold text-[#AEB6C9]" htmlFor="stream-tone">
-              방송 말투
-              <select
-                id="stream-tone"
-                value={streamTone}
+            <p className="mt-4 text-sm font-bold text-[#AEB6C9]">기본 어미</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {SPEECH_LEVELS.map((level) => (
+                <button
+                  key={level}
+                  type="button"
+                  aria-pressed={speechLevel === level}
+                  onClick={() => {
+                    setSpeechLevel(level);
+                  }}
+                  className={`min-h-12 rounded-full px-4 text-sm font-extrabold ${
+                    speechLevel === level
+                      ? "bg-[#00FFA3] text-[#090A0B]"
+                      : "border border-white/10 bg-[#0E0F11] text-[#D7DDEA]"
+                  }`}
+                >
+                  {level}
+                </button>
+              ))}
+            </div>
+
+            <p className="mt-4 text-sm font-bold text-[#AEB6C9]">스타일 조합</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {TONE_TAGS.map((tag) => {
+                const selected = toneTags.includes(tag);
+                return (
+                  <button
+                    key={tag}
+                    type="button"
+                    aria-pressed={selected}
+                    onClick={() => {
+                      setToneTags((current) =>
+                        current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag],
+                      );
+                    }}
+                    className={`min-h-12 rounded-full px-4 text-sm font-extrabold ${
+                      selected
+                        ? "bg-[#00FFA3] text-[#090A0B]"
+                        : "border border-white/10 bg-[#0E0F11] text-[#D7DDEA]"
+                    }`}
+                  >
+                    {TONE_TAG_LABELS[tag]}
+                  </button>
+                );
+              })}
+            </div>
+
+            <label className="mt-4 block text-sm font-bold text-[#AEB6C9]" htmlFor="stream-habit">
+              말투 디테일
+              <textarea
+                id="stream-habit"
+                value={streamHabit}
+                maxLength={MAX_STREAM_HABIT}
                 onChange={(event) => {
-                  if (isStreamTone(event.target.value)) {
-                    setStreamTone(event.target.value);
-                  }
+                  setStreamHabit(event.target.value);
                 }}
-                className="mt-1 min-h-12 w-full rounded-2xl border border-white/10 bg-[#0E0F11] px-4 text-base font-semibold text-white outline-none"
-              >
-                {STREAM_TONES.map((tone) => (
-                  <option key={tone} value={tone}>
-                    {tone}
-                  </option>
-                ))}
-              </select>
+                placeholder={'"~하구만" 어미 사용, 과한 감탄사 자제'}
+                rows={2}
+                className="mt-1 w-full rounded-2xl border border-white/10 bg-[#0E0F11] px-4 py-3 text-base font-semibold leading-6 text-white outline-none placeholder:text-[#6E768A]"
+              />
             </label>
+
+            <p className="mt-4 text-sm font-bold text-[#AEB6C9]">미사용 자동 로그아웃</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {LOGOUT_PRESETS.map((minutes) => (
+                <button
+                  key={minutes}
+                  type="button"
+                  aria-pressed={autoLogoutMinutes === minutes}
+                  onClick={() => {
+                    setAutoLogoutMinutes(minutes);
+                  }}
+                  className={`min-h-12 rounded-full px-4 text-sm font-extrabold ${
+                    autoLogoutMinutes === minutes
+                      ? "bg-[#00FFA3] text-[#090A0B]"
+                      : "border border-white/10 bg-[#0E0F11] text-[#D7DDEA]"
+                  }`}
+                >
+                  {minutes === 0 ? "끄기(기본)" : LOGOUT_LABELS[minutes]}
+                </button>
+              ))}
+            </div>
 
             <label className="mt-4 block text-sm font-bold text-[#AEB6C9]" htmlFor="stream-context">
               방송 컨셉 메모

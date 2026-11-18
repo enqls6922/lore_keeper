@@ -161,7 +161,9 @@ async function publishBriefing(
     triggerType,
     triggerMessage: input.message,
     cheeseAmount: input.cheeseAmount,
-    streamTone: user.streamTone,
+    streamSpeechLevel: user.streamSpeechLevel,
+    streamToneTags: user.streamToneTags,
+    streamHabit: user.streamHabit,
     streamContext: user.streamContext,
   });
   const card = briefing
@@ -196,7 +198,9 @@ async function publishAnonymous(user: User, input: ChatEventInput): Promise<Resp
     triggerType: "CHEESE",
     triggerMessage: input.message,
     cheeseAmount: input.cheeseAmount,
-    streamTone: user.streamTone,
+    streamSpeechLevel: user.streamSpeechLevel,
+    streamToneTags: user.streamToneTags,
+    streamHabit: user.streamHabit,
     streamContext: user.streamContext,
   });
   const card = briefing

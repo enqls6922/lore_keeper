@@ -38,6 +38,31 @@ async function main(): Promise<void> {
 
   await dropLegacyTables();
   execFileSync("prisma", ["db", "push", "--accept-data-loss"], { stdio: "inherit" });
+  await backfillSpeechSettings();
+}
+
+/** 예전 말투 한 칸을 아직 손대지 않은 계정에만 새 어미·태그로 옮긴다. */
+async function backfillSpeechSettings(): Promise<void> {
+  const prisma = new PrismaClient();
+  try {
+    await prisma.$executeRawUnsafe(`
+      UPDATE "User"
+      SET "streamSpeechLevel" = "streamTone"
+      WHERE "streamTone" IN ('친근한 반말', '정중한 존댓말')
+        AND "streamSpeechLevel" = '친근한 반말'
+        AND "streamTone" <> '친근한 반말'
+        AND "streamToneTags" = ARRAY['텐션 높음']::text[]
+    `);
+    await prisma.$executeRawUnsafe(`
+      UPDATE "User"
+      SET "streamToneTags" = ARRAY['시크·무심']::text[]
+      WHERE "streamTone" = '담백한 진행'
+        AND "streamSpeechLevel" = '친근한 반말'
+        AND "streamToneTags" = ARRAY['텐션 높음']::text[]
+    `);
+  } finally {
+    await prisma.$disconnect();
+  }
 }
 
 main().catch((error: unknown) => {

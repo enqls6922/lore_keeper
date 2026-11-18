@@ -7,6 +7,13 @@ import type { Briefing } from "@prisma/client";
 
 import { ANONYMOUS_NICKNAME } from "@/lib/anonymous";
 import { prisma } from "@/lib/prisma";
+import {
+  DEFAULT_SPEECH_LEVEL,
+  isSpeechLevel,
+  isToneTag,
+  type SpeechLevel,
+  type ToneTag,
+} from "@/lib/stream-settings";
 
 /** 브리핑을 만든 계기. 스키마의 triggerType 과 동일한 값만 허용한다. */
 export type BriefingTriggerType = "CHEESE" | "NEW_VIEWER" | "RETURNING";
@@ -35,7 +42,9 @@ export interface GenerateBriefingInput {
   triggerType: BriefingTriggerType;
   triggerMessage: string;
   cheeseAmount: number;
-  streamTone: string;
+  streamSpeechLevel: string;
+  streamToneTags: string[];
+  streamHabit: string | null;
   streamContext: string | null;
 }
 
@@ -56,8 +65,8 @@ const SYSTEM_PROMPT = `너는 한국어 버튜버·인터넷 방송 전문 방�
 - summary는 공백 포함 30자 이내의 개조식이다. 문장은 "~함" 또는 "~임"으로 끝낸다.
 - 누적 치즈액, 이번 후원액, 방문 횟수처럼 숫자로 된 사실은 사용자가 넘긴 [사실 데이터]에 적힌 값만 쓴다. 데이터에 없는 숫자, 금액, 횟수는 절대 만들지 않는다.
 - 이전 요약 문장과 사실 데이터의 숫자가 다르면 사실 데이터의 숫자를 따른다.
-- 방송 컨셉 메모는 말투와 호칭에만 반영한다. 메모에 없는 사건이나 숫자를 사실처럼 쓰지 않는다.
-- suggestedReplies는 스트리머가 마이크에 대고 바로 받아칠 구어체 멘트 정확히 2개다. [방송 말투]를 그대로 따른다.
+- 방송 컨셉 메모와 말투 디테일은 어미, 호칭, 금지에만 반영한다. 메모에 없는 사건이나 숫자를 사실처럼 쓰지 않는다.
+- suggestedReplies는 스트리머가 마이크에 대고 바로 받아칠 구어체 멘트 정확히 2개다. [기본 어미]로 끝내고, [스타일 태그]의 성격을 두 멘트에 자연스럽게 섞는다. 태그 이름은 그대로 읽지 않는다.
 - 익명 후원이면 누적 치즈, 방문 횟수, 단골 여부를 절대 말하지 않는다. 이번 치즈만 말하고, 추천 멘트는 "익명님 1,000치즈 감사합니다!"처럼 이번 후원만 자연스럽게 말한다.
 - 마크다운, 코드 블록, 머리말, 부연 설명은 넣지 않는다.`;
 
@@ -109,28 +118,92 @@ function joinFacts(lead: string, detail: string): string {
   return Array.from(lead).slice(0, SUMMARY_LIMIT).join("");
 }
 
-function repliesForTone(tone: string, lines: Record<string, [string, string]>): [string, string] {
-  return lines[tone] ?? lines["친근한 반말"];
+function speechLevelOf(value: string): SpeechLevel {
+  return isSpeechLevel(value) ? value : DEFAULT_SPEECH_LEVEL;
 }
 
-function anonymousDraft(cheeseAmount: string, tone: string): BriefingDraft {
-  return {
-    summary: `${cheeseAmount}치즈 익명 후원임`,
-    suggestedReplies: repliesForTone(tone, {
-      "친근한 반말": [`익명님 ${cheeseAmount}치즈 고마워!`, "익명님 후원 잘 받았어"],
-      "정중한 존댓말": [`익명님 ${cheeseAmount}치즈 감사합니다!`, "익명님 후원 감사합니다"],
-      "텐션 높은 리액션": [`익명님 ${cheeseAmount}치즈?! 대박이야`, "익명님 고마워!"],
-      "담백한 진행": [`익명님 ${cheeseAmount}치즈 확인했어`, "익명님 후원 받았어"],
-    }),
-  };
+function toneTagsOf(values: string[]): ToneTag[] {
+  return values.filter(isToneTag);
+}
+
+function speak(level: SpeechLevel, casual: string, polite: string, mixed: string): string {
+  if (level === "정중한 존댓말") {
+    return polite;
+  }
+  if (level === "반존대") {
+    return mixed;
+  }
+  return casual;
+}
+
+const TAG_FLAVOR: Record<ToneTag, { casual: string; polite: string; mixed: string }> = {
+  "텐션 높음": { casual: "진짜 대박이야", polite: "정말 놀랍습니다", mixed: "진짜 대박이에요" },
+  "시크·무심": { casual: "담백하게 받았어", polite: "담백하게 받았습니다", mixed: "담백하게 받았어요" },
+  "장난기·티키타카": { casual: "장난 아니야", polite: "장난이 아닙니다", mixed: "장난 아니에요" },
+  "다정·감사": { casual: "마음이 따뜻해", polite: "마음이 따뜻합니다", mixed: "마음이 따뜻해요" },
+  "겜방·드립": { casual: "캐리 고마워", polite: "캐리에 감사합니다", mixed: "캐리 고마워요" },
+};
+
+/** 고른 태그 성격을 같은 어미로 한 줄에 섞는다. 태그가 없으면 짧은 인사만 한다. */
+function blendTags(level: SpeechLevel, tags: readonly ToneTag[]): string {
+  const bits = tags
+    .slice(0, 2)
+    .map((tag) => speak(level, TAG_FLAVOR[tag].casual, TAG_FLAVOR[tag].polite, TAG_FLAVOR[tag].mixed));
+  if (bits.length === 0) {
+    return speak(level, "오늘도 반가워", "오늘도 반갑습니다", "오늘도 반가워요");
+  }
+  return bits.join(" ");
+}
+
+function speechRule(level: SpeechLevel): string {
+  if (level === "정중한 존댓말") {
+    return "문장 끝은 ~습니다, ~세요처럼 정중한 존댓말로 한다. 반말은 쓰지 않는다.";
+  }
+  if (level === "반존대") {
+    return "문장 끝은 친근한 ~요로 한다. 딱딱한 ~습니다와 짧은 반말은 쓰지 않는다.";
+  }
+  return "문장 끝은 친근한 반말로 한다. ~요, ~습니다는 쓰지 않는다.";
+}
+
+function voiceBlock(input: GenerateBriefingInput): string {
+  const level = speechLevelOf(input.streamSpeechLevel);
+  const tags = toneTagsOf(input.streamToneTags);
+  const habit = input.streamHabit?.trim() || "없음";
+  const context = input.streamContext?.trim() || "없음";
+  return `[기본 어미]
+${level}
+${speechRule(level)}
+
+[스타일 태그]
+${tags.length > 0 ? tags.join(", ") : "없음"}
+선택된 태그의 성격을 추천 멘트 2개에 자연스럽게 섞는다. 태그 이름을 멘트에 넣지 않는다.
+
+[말투 디테일]
+${habit}
+이 메모는 입버릇과 피할 말투만 반영한다. 메모의 문장을 사건이나 사실처럼 쓰지 않는다.
+
+[방송 컨셉 메모]
+${context}`;
+}
+
+function spokenPair(level: SpeechLevel, tags: readonly ToneTag[], first: { casual: string; polite: string; mixed: string }): [string, string] {
+  return [speak(level, first.casual, first.polite, first.mixed), blendTags(level, tags)];
 }
 
 /** 모델이 없을 때도 사실 데이터에 있는 숫자만 써서 30자 개조식으로 만든다. */
 function buildFactualDraft(input: GenerateBriefingInput): BriefingDraft {
   const cheeseAmount = formatFact(input.cheeseAmount);
-  const tone = input.streamTone;
+  const level = speechLevelOf(input.streamSpeechLevel);
+  const tags = toneTagsOf(input.streamToneTags);
   if (input.person.isAnonymous) {
-    return anonymousDraft(cheeseAmount, tone);
+    return {
+      summary: `${cheeseAmount}치즈 익명 후원임`,
+      suggestedReplies: spokenPair(level, tags, {
+        casual: `익명님 ${cheeseAmount}치즈 고마워`,
+        polite: `익명님 ${cheeseAmount}치즈 감사합니다`,
+        mixed: `익명님 ${cheeseAmount}치즈 고마워요`,
+      }),
+    };
   }
 
   const nickname = input.person.nickname;
@@ -140,11 +213,10 @@ function buildFactualDraft(input: GenerateBriefingInput): BriefingDraft {
   if (input.triggerType === "CHEESE") {
     return {
       summary: joinFacts(`${cheeseAmount}치즈 후원함`, `누적 ${totalCheese}임`),
-      suggestedReplies: repliesForTone(tone, {
-        "친근한 반말": [`${nickname} 치즈 ${cheeseAmount}개 고마워`, `누적 ${totalCheese}개네`],
-        "정중한 존댓말": [`${nickname} 님, 치즈 ${cheeseAmount}개 감사합니다`, `누적 ${totalCheese}개입니다`],
-        "텐션 높은 리액션": [`${nickname} 치즈 ${cheeseAmount}개?! 대박`, `누적 ${totalCheese}개 실화야`],
-        "담백한 진행": [`${nickname}, 치즈 ${cheeseAmount}개 확인했어`, `누적은 ${totalCheese}개야`],
+      suggestedReplies: spokenPair(level, tags, {
+        casual: `${nickname} 치즈 ${cheeseAmount}개 고마워`,
+        polite: `${nickname} 님, 치즈 ${cheeseAmount}개 감사합니다`,
+        mixed: `${nickname} 님 치즈 ${cheeseAmount}개 고마워요`,
       }),
     };
   }
@@ -152,22 +224,20 @@ function buildFactualDraft(input: GenerateBriefingInput): BriefingDraft {
   if (input.triggerType === "NEW_VIEWER") {
     return {
       summary: joinFacts("첫 채팅임", `방문 ${visitCount}회임`),
-      suggestedReplies: repliesForTone(tone, {
-        "친근한 반말": [`${nickname} 첫 방문 환영해`, "오늘 처음이지"],
-        "정중한 존댓말": [`${nickname} 님, 첫 방문 환영합니다`, "오늘 처음이시죠"],
-        "텐션 높은 리액션": [`${nickname} 첫 방문?! 환영해`, "오늘 처음 온 거야"],
-        "담백한 진행": [`${nickname}, 첫 방문이네`, "오늘 처음 온 거야"],
+      suggestedReplies: spokenPair(level, tags, {
+        casual: `${nickname} 첫 방문 환영해`,
+        polite: `${nickname} 님, 첫 방문 환영합니다`,
+        mixed: `${nickname} 님 첫 방문 환영해요`,
       }),
     };
   }
 
   return {
     summary: joinFacts("다시 방문함", `누적 ${totalCheese}임`),
-    suggestedReplies: repliesForTone(tone, {
-      "친근한 반말": [`${nickname} 또 와 줘서 고마워`, `누적 ${totalCheese}개네`],
-      "정중한 존댓말": [`${nickname} 님, 다시 와 주셔서 감사합니다`, `누적 ${totalCheese}개입니다`],
-      "텐션 높은 리액션": [`${nickname} 또 왔다! 반가워`, `누적 ${totalCheese}개 실화야`],
-      "담백한 진행": [`${nickname}, 다시 왔네`, `누적은 ${totalCheese}개야`],
+    suggestedReplies: spokenPair(level, tags, {
+      casual: `${nickname} 또 와 줘서 고마워`,
+      polite: `${nickname} 님, 다시 와 주셔서 감사합니다`,
+      mixed: `${nickname} 님 또 와 줘서 고마워요`,
     }),
   };
 }
@@ -220,13 +290,9 @@ function buildUserPrompt(input: GenerateBriefingInput): string {
   const chatBlock =
     chats.length > 0 ? chats.map(formatChatLine).join("\n") : "- (최근 채팅 없음)";
 
-  const context = input.streamContext?.trim() || "없음";
+  const voice = voiceBlock(input);
   if (input.person.isAnonymous) {
-    return `[방송 말투]
-${input.streamTone}
-
-[방송 컨셉 메모]
-${context}
+    return `${voice}
 
 [익명 후원]
 이 후원자는 익명이다. 누적 치즈, 방문 횟수, 단골 여부는 말하지 마라.
@@ -234,16 +300,12 @@ ${context}
 이번 치즈: ${input.cheeseAmount}
 이번 메시지: ${input.triggerMessage}
 
-추천 멘트는 "익명님 ${formatFact(input.cheeseAmount)}치즈 감사합니다!"처럼 이번 금액만 자연스럽게 말한다.`;
+추천 멘트는 "익명님 ${formatFact(input.cheeseAmount)}치즈 감사합니다!"처럼 이번 금액만 자연스럽게 말한다. 기본 어미와 스타일 태그를 함께 지킨다.`;
   }
 
   const previousSummary = input.person.aiSummary?.trim() || "없음";
 
-  return `[방송 말투]
-${input.streamTone}
-
-[방송 컨셉 메모]
-${context}
+  return `${voice}
 
 [사실 데이터]
 닉네임: ${input.person.nickname}

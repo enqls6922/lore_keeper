@@ -2,7 +2,19 @@ import { connection } from "next/server";
 
 import { requireUser, unauthorizedResponse } from "@/lib/auth/current-user";
 import { prisma } from "@/lib/prisma";
-import { isCheesePreset, isStreamTone, MAX_STREAM_CONTEXT } from "@/lib/stream-settings";
+import {
+  DEFAULT_SPEECH_LEVEL,
+  isCheesePreset,
+  isLogoutMinutes,
+  isSpeechLevel,
+  isToneTag,
+  MAX_STREAM_CONTEXT,
+  MAX_STREAM_HABIT,
+  readToneTags,
+  type LogoutMinutes,
+  type SpeechLevel,
+  type ToneTag,
+} from "@/lib/stream-settings";
 
 const NO_STORE = { "Cache-Control": "no-store" } as const;
 const MAX_CHANNEL_ID = 64;
@@ -18,9 +30,17 @@ function toProfile(user: {
   aiCredits: number;
   minCheeseAmount: number;
   enableFirstChat: boolean;
-  streamTone: string;
+  streamSpeechLevel: string;
+  streamToneTags: string[];
+  streamHabit: string | null;
   streamContext: string | null;
+  autoLogoutMinutes: number;
 }) {
+  const speechLevel: SpeechLevel = isSpeechLevel(user.streamSpeechLevel)
+    ? user.streamSpeechLevel
+    : DEFAULT_SPEECH_LEVEL;
+  const toneTags: ToneTag[] = (user.streamToneTags ?? []).filter(isToneTag);
+  const autoLogoutMinutes: LogoutMinutes = isLogoutMinutes(user.autoLogoutMinutes) ? user.autoLogoutMinutes : 0;
   return {
     email: user.email,
     chzzkChannelId: user.chzzkChannelId,
@@ -28,8 +48,11 @@ function toProfile(user: {
     aiCredits: user.aiCredits,
     minCheeseAmount: user.minCheeseAmount,
     enableFirstChat: user.enableFirstChat,
-    streamTone: user.streamTone,
+    streamSpeechLevel: speechLevel,
+    streamToneTags: toneTags,
+    streamHabit: user.streamHabit,
     streamContext: user.streamContext,
+    autoLogoutMinutes,
   };
 }
 
@@ -61,8 +84,12 @@ export async function PATCH(request: Request): Promise<Response> {
       chzzkChannelId?: string | null;
       minCheeseAmount?: number;
       enableFirstChat?: boolean;
+      streamSpeechLevel?: string;
       streamTone?: string;
+      streamToneTags?: string[];
+      streamHabit?: string | null;
       streamContext?: string | null;
+      autoLogoutMinutes?: number;
     } = {};
 
     if ("chzzkChannelId" in body) {
@@ -90,11 +117,38 @@ export async function PATCH(request: Request): Promise<Response> {
       data.enableFirstChat = body.enableFirstChat;
     }
 
-    if ("streamTone" in body) {
-      if (!isStreamTone(body.streamTone)) {
-        return Response.json({ message: "방송 말투를 다시 골라 주세요." }, { status: 400, headers: NO_STORE });
+    if ("streamSpeechLevel" in body) {
+      if (!isSpeechLevel(body.streamSpeechLevel)) {
+        return Response.json({ message: "기본 어미를 다시 골라 주세요." }, { status: 400, headers: NO_STORE });
       }
-      data.streamTone = body.streamTone;
+      data.streamSpeechLevel = body.streamSpeechLevel;
+      data.streamTone = body.streamSpeechLevel;
+    }
+
+    if ("streamToneTags" in body) {
+      const tags = readToneTags(body.streamToneTags);
+      if (!tags) {
+        return Response.json({ message: "스타일 태그를 다시 골라 주세요." }, { status: 400, headers: NO_STORE });
+      }
+      data.streamToneTags = tags;
+    }
+
+    if ("streamHabit" in body) {
+      if (body.streamHabit !== null && typeof body.streamHabit !== "string") {
+        return Response.json({ message: "말투 디테일 형식이 올바르지 않습니다." }, { status: 400, headers: NO_STORE });
+      }
+      const trimmed = typeof body.streamHabit === "string" ? body.streamHabit.trim() : "";
+      if (trimmed.length > MAX_STREAM_HABIT) {
+        return Response.json({ message: "말투 디테일이 너무 깁니다." }, { status: 400, headers: NO_STORE });
+      }
+      data.streamHabit = trimmed.length === 0 ? null : trimmed;
+    }
+
+    if ("autoLogoutMinutes" in body) {
+      if (!isLogoutMinutes(body.autoLogoutMinutes)) {
+        return Response.json({ message: "자동 로그아웃 시간을 다시 골라 주세요." }, { status: 400, headers: NO_STORE });
+      }
+      data.autoLogoutMinutes = body.autoLogoutMinutes;
     }
 
     if ("streamContext" in body) {
