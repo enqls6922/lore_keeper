@@ -1,15 +1,17 @@
 import type { Briefing, HighlightMarker } from "@prisma/client";
 
 import type { BriefingCard, HighlightMarkerCard } from "@/lib/briefing-card";
-import { isRadarSignal } from "@/lib/chat-radar";
+import { isBriefingCategory, isMarkerTrigger } from "@/lib/chat-radar";
 
 export function toBriefingCard(row: Briefing): BriefingCard {
   return {
     id: row.id,
     type: row.type === "RADAR" ? "RADAR" : "DONATION",
-    title: row.title,
+    category: isBriefingCategory(row.category) ? row.category : null,
+    nickname: row.nickname,
+    cheeseAmount: row.cheeseAmount,
+    totalCheeseSnapshot: row.totalCheeseSnapshot,
     summary: row.summary,
-    signal: isRadarSignal(row.signal) ? row.signal : null,
     isPinned: row.isPinned,
     createdAt: row.createdAt.toISOString(),
   };
@@ -18,9 +20,11 @@ export function toBriefingCard(row: Briefing): BriefingCard {
 export function toMarkerCard(row: HighlightMarker): HighlightMarkerCard {
   return {
     id: row.id,
-    timestampSec: row.timestampSec,
+    sessionDate: row.sessionDate,
+    elapsedSec: row.elapsedSec,
     formattedTime: row.formattedTime,
-    reason: row.reason,
+    triggerType: isMarkerTrigger(row.triggerType) ? row.triggerType : "CHAT_SPIKE",
+    summary: row.summary,
     createdAt: row.createdAt.toISOString(),
   };
 }

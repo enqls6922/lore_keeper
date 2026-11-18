@@ -1,3 +1,13 @@
+/** 서울 날짜의 방송 회차 키. `YYYY-MM-DD`. */
+export function seoulSessionDate(now = new Date()): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+}
+
 /** 방송 경과 초를 `01:24:15`로 바꾼다. */
 export function formatBroadcastTime(totalSec: number): string {
   const safe = Number.isFinite(totalSec) ? Math.max(0, Math.floor(totalSec)) : 0;

@@ -4,10 +4,10 @@ import { requireUser, unauthorizedResponse } from "@/lib/auth/current-user";
 import { toMarkerCard } from "@/lib/briefing-mapper";
 import { prisma } from "@/lib/prisma";
 
-const LATEST_LIMIT = 100;
+const LATEST_LIMIT = 200;
 const NO_STORE = { "Cache-Control": "no-store" } as const;
 
-/** 이번 계정의 편집 마커를 방송 시각 순으로 돌려준다. */
+/** 내 편집 마커를 방송 날짜, 경과 시각 순으로 돌려준다. */
 export async function GET(): Promise<Response> {
   await connection();
 
@@ -19,7 +19,7 @@ export async function GET(): Promise<Response> {
   try {
     const rows = await prisma.highlightMarker.findMany({
       where: { userId: user.id },
-      orderBy: [{ timestampSec: "asc" }, { createdAt: "asc" }],
+      orderBy: [{ sessionDate: "desc" }, { elapsedSec: "asc" }],
       take: LATEST_LIMIT,
     });
     return Response.json(rows.map(toMarkerCard), { headers: NO_STORE });

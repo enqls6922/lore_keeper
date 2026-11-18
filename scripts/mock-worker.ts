@@ -5,7 +5,7 @@ import { randomInt } from "node:crypto";
 import { HIGH_CHEESE } from "@/lib/chat-radar";
 import { summarizeDonation } from "@/lib/llm/pd";
 import { prisma } from "@/lib/prisma";
-import { formatBroadcastTime } from "@/lib/broadcast-time";
+import { formatBroadcastTime, seoulSessionDate } from "@/lib/broadcast-time";
 
 const TICK_MS = 5_000;
 const MOCK_USER_ID = "00000000-0000-4000-8000-000000000001";
@@ -39,18 +39,22 @@ async function simulateOnce(): Promise<void> {
     data: {
       userId: MOCK_USER_ID,
       type: "DONATION",
-      title: `후원팬 · ${cheeseAmount.toLocaleString("ko-KR")} 치즈`,
+      category: "CHEESE",
+      nickname: "후원팬",
+      cheeseAmount,
+      totalCheeseSnapshot: cheeseAmount,
       summary,
-      signal: null,
     },
   });
   if (cheeseAmount >= HIGH_CHEESE) {
     await prisma.highlightMarker.create({
       data: {
         userId: MOCK_USER_ID,
-        timestampSec: elapsed,
+        sessionDate: seoulSessionDate(),
+        elapsedSec: elapsed,
         formattedTime: formatBroadcastTime(elapsed),
-        reason: summary,
+        triggerType: "BIG_DONATION",
+        summary,
       },
     });
   }

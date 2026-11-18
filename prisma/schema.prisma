@@ -9,37 +9,56 @@ datasource db {
 }
 
 model User {
-  id              String            @id // Supabase Auth UUID
-  email           String            @unique
-  chzzkChannelId  String?
-  plan            String            @default("FREE")
-  aiCredits       Int               @default(50)
-  minCheeseAmount Int               @default(1000) // 이 금액 미만 후원은 상황판에 올리지 않는다
-  createdAt       DateTime          @default(now())
-  briefings       Briefing[]
-  markers         HighlightMarker[]
+  id               String            @id // Supabase Auth UUID
+  email            String            @unique
+  chzzkChannelId   String?
+  plan             String            @default("FREE")
+  aiCredits        Int               @default(50)
+  minCheeseAmount  Int               @default(1000) // 이 금액 미만은 누적만 하고 브리핑하지 않는다
+  obsToken         String            @unique @default(dbgenerated("gen_random_uuid()::text")) // OBS 독 무로그인 접속
+  editorShareToken String            @unique @default(dbgenerated("gen_random_uuid()::text")) // 편집자용 읽기 전용 타임라인
+  createdAt        DateTime          @default(now())
+  viewers          Viewer[]
+  briefings        Briefing[]
+  markers          HighlightMarker[]
 }
 
-/// 방송 연결 시각 기준의 편집 타임스탬프. 채팅 원문은 저장하지 않는다.
+/// 조용한 누적 치즈. 방문 횟수와 사연은 두지 않는다.
+model Viewer {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chzzkUserIdHash String
+  nickname        String
+  totalCheese     Int      @default(0)
+  updatedAt       DateTime @updatedAt
+
+  @@unique([userId, chzzkUserIdHash])
+}
+
+model Briefing {
+  id                  String   @id @default(cuid())
+  userId              String
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type                String // "DONATION" | "RADAR"
+  category            String? // "ISSUE" | "QUESTION" | "MOOD" | "CHEESE"
+  nickname            String?
+  cheeseAmount        Int?
+  totalCheeseSnapshot Int? // 후원 시점의 누적 치즈. 익명은 null
+  summary             String // 공백 포함 35자 이내
+  isPinned            Boolean  @default(false)
+  createdAt           DateTime @default(now())
+}
+
+/// 유튜브·쇼츠 편집용 타임스탬프. 채팅 원문은 저장하지 않는다.
 model HighlightMarker {
   id            String   @id @default(cuid())
   userId        String
   user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  timestampSec  Int
-  formattedTime String // 01:24:15
-  reason        String
+  sessionDate   String // YYYY-MM-DD
+  elapsedSec    Int
+  formattedTime String // HH:MM:SS
+  triggerType   String // "CHAT_SPIKE" | "BIG_DONATION"
+  summary       String
   createdAt     DateTime @default(now())
-}
-
-/// 후원 한 줄 또는 레이더 알림. 시청자 누적 기록은 두지 않는다.
-model Briefing {
-  id        String   @id @default(cuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  type      String // "DONATION" | "RADAR"
-  title     String
-  summary   String // 35자 이내
-  signal    String? // "SPIKE" | "QUESTION" | "ISSUE" | "COACHING"
-  isPinned  Boolean  @default(false)
-  createdAt DateTime @default(now())
 }

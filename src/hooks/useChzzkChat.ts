@@ -18,9 +18,10 @@ import {
   RADAR_INTERVAL_MS,
   detectRadar,
   messagesInWindow,
-  pushBaseline,
+  priorFiveMinuteCount,
   pushTimedChat,
-  type RadarSignal,
+  rememberChatTime,
+  type RadarTrigger,
   type TimedChat,
 } from "@/lib/chat-radar";
 
@@ -37,7 +38,7 @@ const IDLE_STATE: ChzzkChatState = {
   liveTitle: null,
   errorMessage: null,
 };
-const SIGNAL_COOLDOWN_MS = 90_000;
+const SIGNAL_COOLDOWN_MS = 60_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -91,33 +92,35 @@ async function postDonation(event: ChzzkInboundEvent, recentChats: string[]): Pr
   }
 }
 
-function rememberChat(buffer: TimedChat[], event: ChzzkInboundEvent): void {
+function rememberChat(buffer: TimedChat[], times: number[], event: ChzzkInboundEvent): void {
   if (isAnonymousDonor(event.userIdHash, event.nickname)) {
     return;
   }
-  pushTimedChat(buffer, event.message, Date.now());
+  const now = Date.now();
+  pushTimedChat(buffer, event.message, now);
+  rememberChatTime(times, now);
 }
 
-function handleInbound(event: ChzzkInboundEvent, buffer: TimedChat[]): void {
+function handleInbound(event: ChzzkInboundEvent, buffer: TimedChat[], times: number[]): void {
   if (event.cheeseAmount <= 0) {
-    rememberChat(buffer, event);
+    rememberChat(buffer, times, event);
     return;
   }
-  const recentChats = messagesInWindow(buffer, Date.now());
+  const recentChats = messagesInWindow(buffer, Date.now()).slice(-20);
   void postDonation(event, recentChats).catch((error: unknown) => {
     const text = error instanceof Error ? error.message : "후원 저장 실패";
     console.error(`[치지직] ${text}`);
   });
-  rememberChat(buffer, event);
+  rememberChat(buffer, times, event);
 }
 
-async function postRadar(signal: RadarSignal, messages: string[]): Promise<void> {
+async function postRadar(triggers: RadarTrigger[], messages: string[]): Promise<void> {
   const response = await fetch("/api/radar", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      signal,
-      messages: messages.slice(-40),
+      triggers,
+      messages: messages.slice(-80),
       elapsedSec: broadcastElapsedSec(),
     }),
   });
@@ -126,27 +129,29 @@ async function postRadar(signal: RadarSignal, messages: string[]): Promise<void>
   }
 }
 
-function scanRadar(buffer: TimedChat[], baselines: number[], lastFired: Map<RadarSignal, number>): void {
+function scanRadar(buffer: TimedChat[], times: number[], lastFired: Map<RadarTrigger, number>): void {
   const now = Date.now();
   const messages = messagesInWindow(buffer, now);
-  const signal = detectRadar(messages, baselines);
-  pushBaseline(baselines, messages.length);
-  if (!signal) {
+  const triggers = detectRadar(messages, messages.length, priorFiveMinuteCount(times, now)).filter((trigger) => {
+    const firedAt = lastFired.get(trigger) ?? 0;
+    return now - firedAt >= SIGNAL_COOLDOWN_MS;
+  });
+  if (triggers.length === 0) {
     return;
   }
-  const firedAt = lastFired.get(signal) ?? 0;
-  if (now - firedAt < SIGNAL_COOLDOWN_MS) {
-    return;
+  for (const trigger of triggers) {
+    lastFired.set(trigger, now);
   }
-  lastFired.set(signal, now);
-  void postRadar(signal, messages).catch((error: unknown) => {
-    lastFired.delete(signal);
+  void postRadar(triggers, messages).catch((error: unknown) => {
+    for (const trigger of triggers) {
+      lastFired.delete(trigger);
+    }
     const text = error instanceof Error ? error.message : "레이더 실패";
     console.error(`[레이더] ${text}`);
   });
 }
 
-function waitForSocket(session: ChzzkSession, stopped: () => boolean, buffer: TimedChat[]): Promise<void> {
+function waitForSocket(session: ChzzkSession, stopped: () => boolean, buffer: TimedChat[], times: number[]): Promise<void> {
   return new Promise((resolve) => {
     const socket = new WebSocket(CHZZK_CHAT_URL);
     let settled = false;
@@ -179,7 +184,7 @@ function waitForSocket(session: ChzzkSession, stopped: () => boolean, buffer: Ti
         socket.send(JSON.stringify(buildChzzkPong()));
       }
       for (const event of frame.events) {
-        handleInbound(event, buffer);
+        handleInbound(event, buffer, times);
       }
     });
 
@@ -209,15 +214,15 @@ function waitForSocket(session: ChzzkSession, stopped: () => boolean, buffer: Ti
 export function useChzzkChat(channelId: string, enabled: boolean): ChzzkChatState {
   const [state, setState] = useState<ChzzkChatState>(IDLE_STATE);
   const bufferRef = useRef<TimedChat[]>([]);
-  const baselinesRef = useRef<number[]>([]);
-  const lastFiredRef = useRef<Map<RadarSignal, number>>(new Map());
+  const timesRef = useRef<number[]>([]);
+  const lastFiredRef = useRef<Map<RadarTrigger, number>>(new Map());
 
   useEffect(() => {
     if (!enabled) {
       return;
     }
     const timer = window.setInterval(() => {
-      scanRadar(bufferRef.current, baselinesRef.current, lastFiredRef.current);
+      scanRadar(bufferRef.current, timesRef.current, lastFiredRef.current);
     }, RADAR_INTERVAL_MS);
     return () => {
       window.clearInterval(timer);
@@ -227,7 +232,7 @@ export function useChzzkChat(channelId: string, enabled: boolean): ChzzkChatStat
   useEffect(() => {
     const trimmed = channelId.trim();
     bufferRef.current = [];
-    baselinesRef.current = [];
+    timesRef.current = [];
     lastFiredRef.current.clear();
     if (!enabled || trimmed.length === 0) {
       return;
@@ -245,7 +250,7 @@ export function useChzzkChat(channelId: string, enabled: boolean): ChzzkChatStat
           return;
         }
         setState({ status: "live", liveTitle: session.liveTitle, errorMessage: null });
-        await waitForSocket(session, () => stopped, bufferRef.current);
+        await waitForSocket(session, () => stopped, bufferRef.current, timesRef.current);
         if (stopped) {
           return;
         }
