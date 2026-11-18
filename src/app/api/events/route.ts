@@ -1,4 +1,3 @@
-import { Prisma } from "@prisma/client";
 import type { User, Viewer } from "@prisma/client";
 import { connection } from "next/server";
 
@@ -9,7 +8,7 @@ import type { BriefingCard, BriefingTriggerType } from "@/lib/briefing-card";
 import { generateBriefing, type BriefingPerson } from "@/lib/llm/briefing";
 import { prisma } from "@/lib/prisma";
 
-const MAX_RECENT_CHATS = 15;
+const MAX_RECENT_CHATS = 20;
 const MAX_CHAT_LENGTH = 500;
 const NO_STORE = { "Cache-Control": "no-store" } as const;
 
@@ -38,17 +37,6 @@ export interface ChatEventResponse {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
-}
-
-function readBounded(value: unknown, maxLength: number): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const trimmed = value.trim();
-  if (trimmed.length === 0 || trimmed.length > maxLength) {
-    return null;
-  }
-  return trimmed;
 }
 
 function resolveTriggerType(cheeseAmount: number, isNew: boolean): BriefingTriggerType {
@@ -113,7 +101,7 @@ function readEventInput(value: unknown): ChatEventInput | null {
     nickname,
     message: value.message.trim(),
     cheeseAmount: value.cheeseAmount,
-    recentChats: anonymous ? [] : readRecentChats(value.recentChats),
+    recentChats: readRecentChats(value.recentChats),
     forceBriefing: value.forceBriefing === true,
     isAnonymous: anonymous,
   };
@@ -126,7 +114,7 @@ function toPerson(viewer: Viewer): BriefingPerson {
     nickname: viewer.nickname,
     totalCheese: viewer.totalCheese,
     visitCount: viewer.visitCount,
-    aiSummary: viewer.aiSummary,
+    storyMemo: viewer.storyMemo,
     isAnonymous: false,
   };
 }
@@ -144,16 +132,7 @@ function skipped(skipReason: EventSkipReason, viewer: ChatEventResponse["viewer"
   return Response.json(body, { headers: NO_STORE });
 }
 
-function isUniqueConflict(error: unknown): boolean {
-  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
-}
-
-async function publishBriefing(
-  user: User,
-  viewer: Viewer,
-  input: ChatEventInput,
-  isNew: boolean,
-): Promise<Response> {
+async function publishBriefing(viewer: Viewer, input: ChatEventInput, isNew: boolean): Promise<Response> {
   const triggerType = resolveTriggerType(input.cheeseAmount, isNew);
   const briefing = await generateBriefing({
     person: toPerson(viewer),
@@ -161,10 +140,6 @@ async function publishBriefing(
     triggerType,
     triggerMessage: input.message,
     cheeseAmount: input.cheeseAmount,
-    streamSpeechLevel: user.streamSpeechLevel,
-    streamToneTags: user.streamToneTags,
-    streamHabit: user.streamHabit,
-    streamContext: user.streamContext,
   });
   const card = briefing
     ? toBriefingCard(
@@ -191,17 +166,13 @@ async function publishAnonymous(user: User, input: ChatEventInput): Promise<Resp
       nickname: ANONYMOUS_NICKNAME,
       totalCheese: 0,
       visitCount: 0,
-      aiSummary: null,
+      storyMemo: null,
       isAnonymous: true,
     },
-    recentChats: [],
+    recentChats: input.recentChats.map((message) => ({ message })),
     triggerType: "CHEESE",
     triggerMessage: input.message,
     cheeseAmount: input.cheeseAmount,
-    streamSpeechLevel: user.streamSpeechLevel,
-    streamToneTags: user.streamToneTags,
-    streamHabit: user.streamHabit,
-    streamContext: user.streamContext,
   });
   const card = briefing
     ? toBriefingCard(
@@ -254,41 +225,7 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     if (input.cheeseAmount <= 0) {
-      if (!input.forceBriefing && !user.enableFirstChat) {
-        return skipped("first-chat-off");
-      }
-
-      const previous = await prisma.viewer.findUnique({ where: { userId_userIdHash: viewerKey } });
-      if (!previous) {
-        try {
-          const created = await prisma.viewer.create({
-            data: {
-              userId: user.id,
-              userIdHash: input.userIdHash,
-              nickname: input.nickname,
-              totalCheese: 0,
-              visitCount: 1,
-              lastSeenAt: now,
-            },
-          });
-          return await publishBriefing(user, created, input, true);
-        } catch (error: unknown) {
-          if (isUniqueConflict(error)) {
-            return skipped("known-viewer");
-          }
-          throw error;
-        }
-      }
-
-      if (!input.forceBriefing) {
-        return skipped("known-viewer");
-      }
-
-      const touched = await prisma.viewer.update({
-        where: { id: previous.id },
-        data: { nickname: input.nickname, lastSeenAt: now },
-      });
-      return await publishBriefing(user, touched, input, false);
+      return skipped("first-chat-off");
     }
 
     const viewer = await prisma.viewer.upsert({
@@ -313,7 +250,7 @@ export async function POST(request: Request): Promise<Response> {
       return skipped("below-minimum", viewerSnapshot(viewer));
     }
 
-    return await publishBriefing(user, viewer, input, false);
+    return await publishBriefing(viewer, input, false);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "이벤트를 저장하지 못했습니다.";
     console.error(`[POST /api/events] ${message}`);
