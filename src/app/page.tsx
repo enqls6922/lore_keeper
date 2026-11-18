@@ -1,22 +1,13 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { PdFeed } from "@/components/pd-feed";
 import { useChzzkChat } from "@/hooks/useChzzkChat";
 import { ANONYMOUS_NICKNAME } from "@/lib/anonymous";
-import {
-  compareDonations,
-  isBriefingCard,
-  isBriefingCardList,
-  isDonationFaded,
-  isHighlightMarkerCard,
-  isHighlightMarkerList,
-  isRadarVisible,
-  radarBannerLabel,
-  type BriefingCard,
-  type HighlightMarkerCard,
-} from "@/lib/briefing-card";
+import { isBriefingCard, isBriefingCardList, type BriefingCard } from "@/lib/briefing-card";
 import { broadcastElapsedSec, formatBroadcastTime } from "@/lib/broadcast-time";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { CHEESE_PRESETS, DEFAULT_MIN_CHEESE, isCheesePreset, type CheesePreset } from "@/lib/stream-settings";
@@ -44,6 +35,8 @@ interface AccountProfile {
   email: string;
   chzzkChannelId: string | null;
   minCheeseAmount: CheesePreset;
+  obsToken: string;
+  editorShareToken: string;
 }
 
 function isAccountProfile(value: unknown): value is AccountProfile {
@@ -51,7 +44,12 @@ function isAccountProfile(value: unknown): value is AccountProfile {
     return false;
   }
   const channelOk = value.chzzkChannelId === null || typeof value.chzzkChannelId === "string";
-  return channelOk && isCheesePreset(value.minCheeseAmount);
+  return (
+    channelOk &&
+    isCheesePreset(value.minCheeseAmount) &&
+    typeof value.obsToken === "string" &&
+    typeof value.editorShareToken === "string"
+  );
 }
 
 function readPostedBriefing(value: unknown): BriefingCard | null {
@@ -61,17 +59,9 @@ function readPostedBriefing(value: unknown): BriefingCard | null {
   return value.briefing;
 }
 
-function readPostedMarker(value: unknown): HighlightMarkerCard | null {
-  if (!isRecord(value) || value.marker === null || value.marker === undefined) {
-    return null;
-  }
-  return isHighlightMarkerCard(value.marker) ? value.marker : null;
-}
-
 export default function HomePage() {
   const router = useRouter();
   const [cards, setCards] = useState<BriefingCard[]>([]);
-  const [markers, setMarkers] = useState<HighlightMarkerCard[]>([]);
   const [pollStatus, setPollStatus] = useState<PollStatus>("loading");
   const [toast, setToast] = useState<string | null>(null);
   const [wakeOn, setWakeOn] = useState(false);
@@ -80,6 +70,8 @@ export default function HomePage() {
   const [accountEmail, setAccountEmail] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [minCheeseAmount, setMinCheeseAmount] = useState<CheesePreset>(DEFAULT_MIN_CHEESE);
+  const [obsToken, setObsToken] = useState("");
+  const [editorShareToken, setEditorShareToken] = useState("");
   const [savingSettings, setSavingSettings] = useState(false);
   const [nowMs, setNowMs] = useState(0);
   const [chatEnabled, setChatEnabled] = useState(false);
@@ -103,15 +95,6 @@ export default function HomePage() {
     });
   }, []);
 
-  const mergeMarker = useCallback((marker: HighlightMarkerCard) => {
-    setMarkers((current) => {
-      if (current.some((item) => item.id === marker.id)) {
-        return current;
-      }
-      return [...current, marker].sort((left, right) => left.timestampSec - right.timestampSec);
-    });
-  }, []);
-
   useEffect(() => {
     let cancelled = false;
 
@@ -121,25 +104,20 @@ export default function HomePage() {
       }
       polling.current = true;
       try {
-        const [briefingResponse, markerResponse] = await Promise.all([
-          fetch("/api/briefings", { cache: "no-store" }),
-          fetch("/api/markers", { cache: "no-store" }),
-        ]);
-        if (briefingResponse.status === 401 || markerResponse.status === 401) {
+        const briefingResponse = await fetch("/api/briefings", { cache: "no-store" });
+        if (briefingResponse.status === 401) {
           router.push("/login");
           return;
         }
-        if (!briefingResponse.ok || !markerResponse.ok) {
+        if (!briefingResponse.ok) {
           throw new Error("상황판 요청이 실패했습니다.");
         }
         const briefingPayload: unknown = await briefingResponse.json();
-        const markerPayload: unknown = await markerResponse.json();
-        if (!isBriefingCardList(briefingPayload) || !isHighlightMarkerList(markerPayload)) {
+        if (!isBriefingCardList(briefingPayload)) {
           throw new Error("상황판 응답 형식이 올바르지 않습니다.");
         }
         if (!cancelled) {
           applyCards(briefingPayload);
-          setMarkers(markerPayload);
           setPollStatus("live");
         }
       } catch (error: unknown) {
@@ -179,6 +157,8 @@ export default function HomePage() {
       }
       setAccountEmail(payload.email);
       setMinCheeseAmount(payload.minCheeseAmount);
+      setObsToken(payload.obsToken);
+      setEditorShareToken(payload.editorShareToken);
       if (payload.chzzkChannelId) {
         setChannelId((current) => (current.trim().length > 0 ? current : payload.chzzkChannelId ?? ""));
       } else if (!settingsTouched.current) {
@@ -259,6 +239,8 @@ export default function HomePage() {
   function applyProfile(payload: AccountProfile): void {
     setAccountEmail(payload.email);
     setMinCheeseAmount(payload.minCheeseAmount);
+    setObsToken(payload.obsToken);
+    setEditorShareToken(payload.editorShareToken);
     setChannelId(payload.chzzkChannelId ?? "");
   }
 
@@ -330,26 +312,15 @@ export default function HomePage() {
     }
   }
 
-  async function copyTimeline(): Promise<void> {
-    const text = markers.map((marker) => `${marker.formattedTime} - ${marker.reason}`).join("\n");
-    if (text.length === 0) {
-      showToast("복사할 마커가 없습니다.");
-      return;
-    }
+  async function copyLink(path: string, label: string): Promise<void> {
+    const text = `${window.location.origin}${path}`;
     try {
       await navigator.clipboard.writeText(text);
     } catch {
-      const field = document.createElement("textarea");
-      field.value = text;
-      field.setAttribute("readonly", "true");
-      field.style.position = "fixed";
-      field.style.left = "-9999px";
-      document.body.append(field);
-      field.select();
-      document.execCommand("copy");
-      field.remove();
+      showToast("복사하지 못했습니다.");
+      return;
     }
-    showToast("편집 타임라인을 복사했습니다.");
+    showToast(label);
   }
 
   async function sendSimulator(event: SimulatorEvent): Promise<void> {
@@ -373,12 +344,8 @@ export default function HomePage() {
         return;
       }
       const card = readPostedBriefing(payload);
-      const marker = readPostedMarker(payload);
       if (card) {
         mergeCard(card);
-      }
-      if (marker) {
-        mergeMarker(marker);
       }
       if (!card && isRecord(payload) && payload.skipReason === "below-minimum") {
         showToast("최소 치즈보다 작아 올리지 않았습니다.");
@@ -402,23 +369,20 @@ export default function HomePage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          signal: "SPIKE",
+          triggers: ["SPIKE"],
           elapsedSec: broadcastElapsedSec(),
-          messages: ["보스 클리어!", "ㅋㅋㅋㅋ", "미쳤다", "클립 각", "다시 보자", "채팅 터졌다", "와", "축하해"],
+          messages: Array.from({ length: 15 }, (_, index) => (index === 14 ? "보스 클리어 축하해" : `채팅 ${index}`)),
         }),
       });
       const payload: unknown = await response.json().catch(() => null);
-      if (!response.ok) {
+      if (!response.ok || !isRecord(payload) || !Array.isArray(payload.briefings)) {
         showToast("레이더 테스트를 보내지 못했습니다.");
         return;
       }
-      const card = readPostedBriefing(payload);
-      const marker = readPostedMarker(payload);
-      if (card) {
-        mergeCard(card);
-      }
-      if (marker) {
-        mergeMarker(marker);
+      for (const card of payload.briefings) {
+        if (isBriefingCard(card)) {
+          mergeCard(card);
+        }
       }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "레이더 테스트 실패";
@@ -447,10 +411,6 @@ export default function HomePage() {
   const statusLive = chatEnabled ? chat.status === "live" : pollStatus === "live";
   const statusDot = statusLive ? "bg-[#00FFA3]" : statusText.includes("중") ? "bg-[#8B93A7]" : "bg-[#FF5C5C]";
   const elapsedLabel = nowMs === 0 ? "00:00:00" : formatBroadcastTime(broadcastElapsedSec(nowMs));
-  const radarCards = cards.filter((card) => isRadarVisible(card, nowMs));
-  const donations = cards
-    .filter((card) => card.type === "DONATION")
-    .sort((left, right) => compareDonations(left, right, nowMs));
 
   return (
     <div className="mx-auto flex min-h-full w-full max-w-[430px] flex-col bg-[#0E0F11] text-white">
@@ -484,6 +444,18 @@ export default function HomePage() {
             </button>
           </div>
         </div>
+
+        <nav aria-label="화면 이동" className="mt-3 grid grid-cols-2 gap-2">
+          <span className="flex min-h-11 items-center justify-center rounded-2xl bg-[#00FFA3] text-sm font-extrabold text-[#090A0B]">
+            상황판
+          </span>
+          <Link
+            href="/timeline"
+            className="flex min-h-11 items-center justify-center rounded-2xl border border-white/10 bg-[#16181C] text-sm font-extrabold text-white"
+          >
+            타임라인
+          </Link>
+        </nav>
 
         <button
           type="button"
@@ -568,6 +540,29 @@ export default function HomePage() {
               ))}
             </div>
 
+            <div className="mt-4 grid grid-cols-1 gap-2">
+              <button
+                type="button"
+                disabled={obsToken.length === 0}
+                onClick={() => {
+                  void copyLink(`/dock/${obsToken}`, "OBS 독 주소를 복사했습니다.");
+                }}
+                className="min-h-12 rounded-2xl border border-white/10 bg-[#0E0F11] text-sm font-extrabold text-white disabled:opacity-40"
+              >
+                OBS 독 URL 복사
+              </button>
+              <button
+                type="button"
+                disabled={editorShareToken.length === 0}
+                onClick={() => {
+                  void copyLink(`/share/${editorShareToken}`, "편집자 공유 링크를 복사했습니다.");
+                }}
+                className="min-h-12 rounded-2xl border border-white/10 bg-[#0E0F11] text-sm font-extrabold text-white disabled:opacity-40"
+              >
+                편집자 공유 링크 복사
+              </button>
+            </div>
+
             <button
               type="submit"
               disabled={savingSettings}
@@ -645,92 +640,7 @@ export default function HomePage() {
           </form>
         ) : null}
 
-        <section aria-label="실시간 PD 레이더" className="flex flex-col gap-2">
-          {radarCards.length === 0 ? (
-            <p className="rounded-[20px] border border-white/10 bg-[#16181C] px-4 py-3 text-sm font-bold text-[#8B93A7]">
-              레이더 대기 중. 채팅이 조용하면 분석을 부르지 않습니다.
-            </p>
-          ) : (
-            radarCards.map((card) => {
-              const banner = radarBannerLabel(card.signal);
-              return (
-                <article key={card.id} className="rounded-[20px] border border-[#00FFA3]/50 bg-[#16181C] px-4 py-3">
-                  <p className="text-sm font-extrabold text-[#00FFA3]">
-                    {banner.icon} {card.title}
-                  </p>
-                  <p className="mt-1 text-lg font-bold leading-snug text-white">{card.summary}</p>
-                </article>
-              );
-            })
-          )}
-        </section>
-
-        <section aria-label="편집 마커" className="rounded-[22px] border border-white/10 bg-[#16181C] px-4 py-4">
-          <div className="flex items-center justify-between gap-2">
-            <h2 className="text-base font-extrabold">편집 마커</h2>
-            <button
-              type="button"
-              onClick={() => {
-                void copyTimeline();
-              }}
-              disabled={markers.length === 0}
-              className="min-h-10 rounded-full bg-[#00FFA3] px-3 text-xs font-extrabold text-[#090A0B] disabled:opacity-40"
-            >
-              📋 편집자용 타임라인 복사
-            </button>
-          </div>
-          {markers.length === 0 ? (
-            <p className="mt-3 text-sm font-semibold leading-6 text-[#8B93A7]">
-              화력이 터지거나 1만 치즈 이상 후원이 오면 시각이 여기 쌓입니다.
-            </p>
-          ) : (
-            <ul className="mt-3 flex flex-col gap-2">
-              {markers.map((marker) => (
-                <li key={marker.id} className="text-sm font-bold leading-6 text-white">
-                  <span className="text-[#FFB800]">{marker.formattedTime}</span>
-                  <span className="text-[#8B93A7]"> - </span>
-                  {marker.reason}
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-
-        <section aria-label="후원 요약" className="flex flex-col gap-2">
-          <h2 className="px-1 text-base font-extrabold">후원 요약</h2>
-          {donations.length === 0 ? (
-            <p className="rounded-[20px] border border-white/10 bg-[#16181C] px-4 py-6 text-base font-semibold leading-7 text-[#C4CAD8]">
-              아직 올라온 후원이 없습니다. 금액과 한 줄 요약만 여기에 뜹니다.
-            </p>
-          ) : (
-            donations.map((card) => (
-              <article
-                key={card.id}
-                className={`rounded-[20px] border border-white/10 bg-[#16181C] px-4 py-3 ${
-                  isDonationFaded(card, nowMs) ? "opacity-40" : ""
-                }`}
-              >
-                <div className="flex items-start gap-2">
-                  <p className="min-w-0 flex-1 text-sm font-extrabold text-[#FFB800]">{card.title}</p>
-                  <button
-                    type="button"
-                    aria-label={card.isPinned ? "고정 해제" : "고정"}
-                    aria-pressed={card.isPinned}
-                    onClick={() => {
-                      void togglePin(card);
-                    }}
-                    className={`min-h-8 min-w-8 shrink-0 rounded-xl text-sm ${
-                      card.isPinned ? "bg-[#FFB800]/15" : "bg-[#0E0F11]"
-                    }`}
-                  >
-                    📌
-                  </button>
-                </div>
-                <p className="mt-2 text-lg font-bold leading-snug text-white">{card.summary}</p>
-              </article>
-            ))
-          )}
-        </section>
+        <PdFeed cards={cards} nowMs={nowMs} onPin={(card) => void togglePin(card)} />
       </main>
 
       {toast ? (

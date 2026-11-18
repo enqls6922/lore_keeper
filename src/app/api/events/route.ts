@@ -4,17 +4,18 @@ import { ANONYMOUS_NICKNAME, isAnonymousDonor } from "@/lib/anonymous";
 import { requireUser, unauthorizedResponse } from "@/lib/auth/current-user";
 import { toBriefingCard, toMarkerCard } from "@/lib/briefing-mapper";
 import type { BriefingCard, HighlightMarkerCard } from "@/lib/briefing-card";
-import { formatBroadcastTime } from "@/lib/broadcast-time";
+import { formatBroadcastTime, seoulSessionDate } from "@/lib/broadcast-time";
 import { HIGH_CHEESE } from "@/lib/chat-radar";
 import { summarizeDonation } from "@/lib/llm/pd";
 import { prisma } from "@/lib/prisma";
 
-const MAX_RECENT_CHATS = 40;
+const MAX_RECENT_CHATS = 20;
 const MAX_CHAT_LENGTH = 200;
 const MAX_ELAPSED_SEC = 48 * 60 * 60;
 const NO_STORE = { "Cache-Control": "no-store" } as const;
 
 interface DonationInput {
+  userIdHash: string;
   nickname: string;
   message: string;
   cheeseAmount: number;
@@ -26,6 +27,7 @@ interface DonationInput {
 export interface DonationResponse {
   briefing: BriefingCard | null;
   marker: HighlightMarkerCard | null;
+  totalCheese: number | null;
   skipReason: "below-minimum" | null;
 }
 
@@ -78,33 +80,28 @@ function readDonation(value: unknown): DonationInput | null {
   ) {
     return null;
   }
-  const elapsedSec = value.elapsedSec;
   if (
-    typeof elapsedSec !== "number" ||
-    !Number.isInteger(elapsedSec) ||
-    elapsedSec < 0 ||
-    elapsedSec > MAX_ELAPSED_SEC
+    typeof value.elapsedSec !== "number" ||
+    !Number.isInteger(value.elapsedSec) ||
+    value.elapsedSec < 0 ||
+    value.elapsedSec > MAX_ELAPSED_SEC
   ) {
     return null;
   }
   return {
+    userIdHash: rawHash,
     nickname: anonymous ? ANONYMOUS_NICKNAME : rawNick,
     message: value.message.trim(),
     cheeseAmount: value.cheeseAmount,
     recentChats: readRecentChats(value.recentChats),
-    elapsedSec,
+    elapsedSec: value.elapsedSec,
     isAnonymous: anonymous,
   };
 }
 
-function donationTitle(input: DonationInput): string {
-  const amount = input.cheeseAmount.toLocaleString("ko-KR");
-  return `${input.nickname} · ${amount} 치즈`;
-}
-
 /**
- * 이번 후원의 한 줄만 남긴다. 시청자 누적 행은 만들지 않는다.
- * 1만 치즈 이상은 같은 시각의 편집 마커도 남긴다.
+ * 비익명 후원은 누적 치즈만 더한다. 최소 금액 미만은 카드 없이 누적만 한다.
+ * 1만 치즈 이상은 편집 마커도 남긴다.
  */
 export async function POST(request: Request): Promise<Response> {
   await connection();
@@ -123,8 +120,26 @@ export async function POST(request: Request): Promise<Response> {
       return unauthorizedResponse();
     }
 
+    let totalCheese: number | null = null;
+    if (!input.isAnonymous) {
+      const viewer = await prisma.viewer.upsert({
+        where: { userId_chzzkUserIdHash: { userId: user.id, chzzkUserIdHash: input.userIdHash } },
+        create: {
+          userId: user.id,
+          chzzkUserIdHash: input.userIdHash,
+          nickname: input.nickname,
+          totalCheese: input.cheeseAmount,
+        },
+        update: {
+          nickname: input.nickname,
+          totalCheese: { increment: input.cheeseAmount },
+        },
+      });
+      totalCheese = viewer.totalCheese;
+    }
+
     if (input.cheeseAmount < user.minCheeseAmount) {
-      const body: DonationResponse = { briefing: null, marker: null, skipReason: "below-minimum" };
+      const body: DonationResponse = { briefing: null, marker: null, totalCheese, skipReason: "below-minimum" };
       return Response.json(body, { headers: NO_STORE });
     }
 
@@ -139,9 +154,11 @@ export async function POST(request: Request): Promise<Response> {
       data: {
         userId: user.id,
         type: "DONATION",
-        title: donationTitle(input),
+        category: "CHEESE",
+        nickname: input.nickname,
+        cheeseAmount: input.cheeseAmount,
+        totalCheeseSnapshot: input.isAnonymous ? null : totalCheese,
         summary,
-        signal: null,
       },
     });
     const marker =
@@ -149,9 +166,11 @@ export async function POST(request: Request): Promise<Response> {
         ? await prisma.highlightMarker.create({
             data: {
               userId: user.id,
-              timestampSec: input.elapsedSec,
+              sessionDate: seoulSessionDate(),
+              elapsedSec: input.elapsedSec,
               formattedTime: formatBroadcastTime(input.elapsedSec),
-              reason: summary,
+              triggerType: "BIG_DONATION",
+              summary,
             },
           })
         : null;
@@ -159,6 +178,7 @@ export async function POST(request: Request): Promise<Response> {
     const body: DonationResponse = {
       briefing: toBriefingCard(briefing),
       marker: marker ? toMarkerCard(marker) : null,
+      totalCheese,
       skipReason: null,
     };
     return Response.json(body, { headers: NO_STORE });

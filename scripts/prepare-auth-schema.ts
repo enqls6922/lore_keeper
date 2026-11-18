@@ -37,23 +37,30 @@ async function main(): Promise<void> {
   }
 
   await dropLegacyTables();
-  await dropViewerTracking();
+  await alignBoardTables();
   execFileSync("prisma", ["db", "push", "--accept-data-loss"], { stdio: "inherit" });
 }
 
-/** 시청자 누적 표와, 새 칸이 없는 예전 브리핑 표를 지운 뒤 스키마를 맞춘다. */
-async function dropViewerTracking(): Promise<void> {
+/** 예전 칸이 남아 있으면 그 표만 지우고, 이미 맞는 누적 치즈는 남긴다. */
+async function alignBoardTables(): Promise<void> {
   const prisma = new PrismaClient();
   try {
-    await prisma.$executeRawUnsafe('DROP TABLE IF EXISTS "Viewer" CASCADE');
-    const columns = await prisma.$queryRaw<Array<{ column_name: string }>>`
-      SELECT column_name
+    const columns = await prisma.$queryRaw<Array<{ table_name: string; column_name: string }>>`
+      SELECT table_name, column_name
       FROM information_schema.columns
-      WHERE table_schema = 'public' AND table_name = 'Briefing'
+      WHERE table_schema = 'public' AND table_name IN ('Viewer', 'Briefing', 'HighlightMarker')
     `;
-    const names = new Set(columns.map((row) => row.column_name));
-    if (names.size > 0 && !names.has("type")) {
+    const has = (table: string, column: string): boolean =>
+      columns.some((row) => row.table_name === table && row.column_name === column);
+    const hasTable = (table: string): boolean => columns.some((row) => row.table_name === table);
+    if (hasTable("Viewer") && !has("Viewer", "chzzkUserIdHash")) {
+      await prisma.$executeRawUnsafe('DROP TABLE IF EXISTS "Viewer" CASCADE');
+    }
+    if (hasTable("Briefing") && !has("Briefing", "category")) {
       await prisma.$executeRawUnsafe('DROP TABLE IF EXISTS "Briefing" CASCADE');
+    }
+    if (hasTable("HighlightMarker") && !has("HighlightMarker", "sessionDate")) {
+      await prisma.$executeRawUnsafe('DROP TABLE IF EXISTS "HighlightMarker" CASCADE');
     }
   } finally {
     await prisma.$disconnect();

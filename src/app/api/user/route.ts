@@ -17,6 +17,8 @@ function toProfile(user: {
   plan: string;
   aiCredits: number;
   minCheeseAmount: number;
+  obsToken: string;
+  editorShareToken: string;
 }) {
   return {
     email: user.email,
@@ -24,6 +26,8 @@ function toProfile(user: {
     plan: user.plan,
     aiCredits: user.aiCredits,
     minCheeseAmount: user.minCheeseAmount,
+    obsToken: user.obsToken,
+    editorShareToken: user.editorShareToken,
   };
 }
 

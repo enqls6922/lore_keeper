@@ -3,6 +3,15 @@ import { NextResponse, type NextRequest } from "next/server";
 
 import { readSupabasePublicEnv } from "@/lib/supabase/env";
 
+function isPublicBoard(path: string): boolean {
+  return (
+    path.startsWith("/dock/") ||
+    path.startsWith("/share/") ||
+    path.startsWith("/api/dock/") ||
+    path.startsWith("/api/share/")
+  );
+}
+
 function copyCookies(from: NextResponse, to: NextResponse): NextResponse {
   for (const cookie of from.cookies.getAll()) {
     to.cookies.set(cookie);
@@ -18,12 +27,15 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
   let response = NextResponse.next({ request });
   const env = readSupabasePublicEnv();
   const path = request.nextUrl.pathname;
+  if (isPublicBoard(path)) {
+    return response;
+  }
 
   if (!env) {
     if (path.startsWith("/api/")) {
       return NextResponse.json({ message: "로그인이 필요합니다." }, { status: 401 });
     }
-    if (path === "/") {
+    if (path === "/" || path === "/timeline") {
       return NextResponse.redirect(new URL("/login", request.url));
     }
     return response;
@@ -49,7 +61,7 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
   const { data } = await supabase.auth.getUser();
   const user = data.user;
 
-  if (!user && path === "/") {
+  if (!user && (path === "/" || path === "/timeline")) {
     return copyCookies(response, NextResponse.redirect(new URL("/login", request.url)));
   }
   if (!user && path.startsWith("/api/")) {

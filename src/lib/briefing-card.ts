@@ -1,23 +1,35 @@
-import { DONATION_FADE_MS, RADAR_VISIBLE_MS, type RadarSignal } from "@/lib/chat-radar";
+import {
+  DONATION_FADE_MS,
+  HIGH_CHEESE,
+  HIGH_DONATION_FADE_MS,
+  RADAR_VISIBLE_MS,
+  isBriefingCategory,
+  isMarkerTrigger,
+  type BriefingCategory,
+  type MarkerTrigger,
+} from "@/lib/chat-radar";
 
-/** 대시보드와 API가 공유하는 카드. 시청자 누적 숫자는 담지 않는다. */
 export type BriefingType = "DONATION" | "RADAR";
 
 export interface BriefingCard {
   id: string;
   type: BriefingType;
-  title: string;
+  category: BriefingCategory | null;
+  nickname: string | null;
+  cheeseAmount: number | null;
+  totalCheeseSnapshot: number | null;
   summary: string;
-  signal: RadarSignal | null;
   isPinned: boolean;
   createdAt: string;
 }
 
 export interface HighlightMarkerCard {
   id: string;
-  timestampSec: number;
+  sessionDate: string;
+  elapsedSec: number;
   formattedTime: string;
-  reason: string;
+  triggerType: MarkerTrigger;
+  summary: string;
   createdAt: string;
 }
 
@@ -29,20 +41,27 @@ function isInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value);
 }
 
-function isSignal(value: unknown): value is RadarSignal | null {
-  return value === null || value === "SPIKE" || value === "QUESTION" || value === "ISSUE" || value === "COACHING";
+function isOptionalInt(value: unknown): value is number | null {
+  return value === null || isInteger(value);
+}
+
+function isOptionalString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
 }
 
 export function isBriefingCard(value: unknown): value is BriefingCard {
   if (!isRecord(value)) {
     return false;
   }
+  const categoryOk = value.category === null || isBriefingCategory(value.category);
   return (
     typeof value.id === "string" &&
     (value.type === "DONATION" || value.type === "RADAR") &&
-    typeof value.title === "string" &&
+    categoryOk &&
+    isOptionalString(value.nickname) &&
+    isOptionalInt(value.cheeseAmount) &&
+    isOptionalInt(value.totalCheeseSnapshot) &&
     typeof value.summary === "string" &&
-    isSignal(value.signal) &&
     typeof value.isPinned === "boolean" &&
     typeof value.createdAt === "string"
   );
@@ -53,14 +72,15 @@ export function isBriefingCardList(value: unknown): value is BriefingCard[] {
 }
 
 export function isHighlightMarkerCard(value: unknown): value is HighlightMarkerCard {
-  if (!isRecord(value)) {
+  if (!isRecord(value) || !isMarkerTrigger(value.triggerType)) {
     return false;
   }
   return (
     typeof value.id === "string" &&
-    isInteger(value.timestampSec) &&
+    typeof value.sessionDate === "string" &&
+    isInteger(value.elapsedSec) &&
     typeof value.formattedTime === "string" &&
-    typeof value.reason === "string" &&
+    typeof value.summary === "string" &&
     typeof value.createdAt === "string"
   );
 }
@@ -70,8 +90,11 @@ export function isHighlightMarkerList(value: unknown): value is HighlightMarkerC
 }
 
 export function isRadarVisible(card: BriefingCard, nowMs: number): boolean {
-  if (card.type !== "RADAR" || nowMs <= 0) {
-    return card.type === "RADAR";
+  if (card.type !== "RADAR") {
+    return false;
+  }
+  if (nowMs <= 0) {
+    return true;
   }
   const createdMs = Date.parse(card.createdAt);
   if (!Number.isFinite(createdMs)) {
@@ -88,7 +111,8 @@ export function isDonationFaded(card: BriefingCard, nowMs: number): boolean {
   if (!Number.isFinite(createdMs)) {
     return false;
   }
-  return nowMs - createdMs >= DONATION_FADE_MS;
+  const limit = (card.cheeseAmount ?? 0) >= HIGH_CHEESE ? HIGH_DONATION_FADE_MS : DONATION_FADE_MS;
+  return nowMs - createdMs >= limit;
 }
 
 function donationRank(card: BriefingCard, nowMs: number): number {
@@ -98,7 +122,7 @@ function donationRank(card: BriefingCard, nowMs: number): number {
   return isDonationFaded(card, nowMs) ? 2 : 1;
 }
 
-/** 고정이 위, 선명한 후원이 다음, 3분이 지난 후원은 아래다. */
+/** 고정이 위, 선명한 후원이 다음, 시간이 지난 후원은 아래다. */
 export function compareDonations(left: BriefingCard, right: BriefingCard, nowMs: number): number {
   const rank = donationRank(left, nowMs) - donationRank(right, nowMs);
   if (rank !== 0) {
@@ -107,15 +131,42 @@ export function compareDonations(left: BriefingCard, right: BriefingCard, nowMs:
   return right.createdAt.localeCompare(left.createdAt);
 }
 
-export function radarBannerLabel(signal: RadarSignal | null): { icon: string; title: string } {
-  if (signal === "ISSUE") {
+export function radarBanner(category: BriefingCategory | null): { icon: string; title: string } {
+  if (category === "ISSUE") {
     return { icon: "⚠️", title: "방송 이슈" };
   }
-  if (signal === "QUESTION") {
+  if (category === "QUESTION") {
     return { icon: "💬", title: "채팅방 공통 질문" };
   }
-  if (signal === "COACHING") {
-    return { icon: "🔥", title: "훈수/논쟁 과열 감지 — 화제 전환 추천" };
+  return { icon: "🔥", title: "분위기 / 훈수" };
+}
+
+/** 1분 미만은 방금 전이다. */
+export function formatElapsed(createdAt: string, nowMs: number): string {
+  const createdMs = Date.parse(createdAt);
+  const delta = Number.isFinite(createdMs) ? Math.max(0, nowMs - createdMs) : 0;
+  const minute = 60_000;
+  if (delta < minute) {
+    return "방금 전";
   }
-  return { icon: "🔥", title: "채팅 화력 폭발" };
+  const minutes = Math.floor(delta / minute);
+  if (minutes < 60) {
+    return `${minutes}분 전`;
+  }
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    return `${hours}시간 전`;
+  }
+  return `${Math.floor(hours / 24)}일 전`;
+}
+
+/** 익명은 비우고, 이번 금액과 누적이 같으면 첫 후원만 적는다. */
+export function cumulativeLabel(card: BriefingCard): string | null {
+  if (card.type !== "DONATION" || card.totalCheeseSnapshot === null) {
+    return null;
+  }
+  if (card.cheeseAmount !== null && card.totalCheeseSnapshot === card.cheeseAmount) {
+    return "첫 후원";
+  }
+  return `누적 ${card.totalCheeseSnapshot.toLocaleString("ko-KR")}치즈`;
 }
