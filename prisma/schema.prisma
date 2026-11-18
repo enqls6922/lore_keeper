@@ -9,45 +9,37 @@ datasource db {
 }
 
 model User {
-  id              String     @id // Supabase Auth UUID
-  email           String     @unique
+  id              String            @id // Supabase Auth UUID
+  email           String            @unique
   chzzkChannelId  String?
-  plan            String     @default("FREE")
-  aiCredits       Int        @default(50)
-  minCheeseAmount Int        @default(1000) // 이 금액 미만 후원은 누적만 하고 상황판에 올리지 않는다
-  createdAt       DateTime   @default(now())
-  viewers         Viewer[]
+  plan            String            @default("FREE")
+  aiCredits       Int               @default(50)
+  minCheeseAmount Int               @default(1000) // 이 금액 미만 후원은 상황판에 올리지 않는다
+  createdAt       DateTime          @default(now())
   briefings       Briefing[]
+  markers         HighlightMarker[]
 }
 
-model Viewer {
-  id          String     @id @default(cuid())
-  userId      String
-  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userIdHash  String // 치지직 고유 유저 식별 해시
-  nickname    String
-  totalCheese Int        @default(0)
-  visitCount  Int        @default(1)
-  storyMemo   String? // 이 시청자의 과거 후원 사연을 40자 안으로 압축한 기억
-  lastSeenAt  DateTime   @default(now())
-  createdAt   DateTime   @default(now())
-  briefings   Briefing[]
-
-  @@unique([userId, userIdHash])
+/// 방송 연결 시각 기준의 편집 타임스탬프. 채팅 원문은 저장하지 않는다.
+model HighlightMarker {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  timestampSec  Int
+  formattedTime String // 01:24:15
+  reason        String
+  createdAt     DateTime @default(now())
 }
 
+/// 후원 한 줄 또는 레이더 알림. 시청자 누적 기록은 두지 않는다.
 model Briefing {
-  id              String   @id @default(cuid())
-  userId          String
-  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  viewerId        String? // 익명 후원은 시청자와 연결하지 않는다
-  viewer          Viewer?  @relation(fields: [viewerId], references: [id], onDelete: Cascade)
-  triggerType     String // "CHEESE"
-  triggerMessage  String
-  cheeseAmount    Int      @default(0)
-  viewerStory     String? // 이 후원 시점의 시청자 누적 서사
-  contextSummary  String? // 후원 직전 채팅과 후원 이유 한 줄
-  isPinned        Boolean  @default(false)
-  isDone          Boolean  @default(false)
-  createdAt       DateTime @default(now())
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String // "DONATION" | "RADAR"
+  title     String
+  summary   String // 35자 이내
+  signal    String? // "SPIKE" | "QUESTION" | "ISSUE" | "COACHING"
+  isPinned  Boolean  @default(false)
+  createdAt DateTime @default(now())
 }

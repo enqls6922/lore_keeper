@@ -1,52 +1,36 @@
-import type { User, Viewer } from "@prisma/client";
 import { connection } from "next/server";
 
 import { ANONYMOUS_NICKNAME, isAnonymousDonor } from "@/lib/anonymous";
 import { requireUser, unauthorizedResponse } from "@/lib/auth/current-user";
-import { briefingInclude, toBriefingCard } from "@/lib/briefing-mapper";
-import type { BriefingCard, BriefingTriggerType } from "@/lib/briefing-card";
-import { generateBriefing, type BriefingPerson } from "@/lib/llm/briefing";
+import { toBriefingCard, toMarkerCard } from "@/lib/briefing-mapper";
+import type { BriefingCard, HighlightMarkerCard } from "@/lib/briefing-card";
+import { formatBroadcastTime } from "@/lib/broadcast-time";
+import { HIGH_CHEESE } from "@/lib/chat-radar";
+import { summarizeDonation } from "@/lib/llm/pd";
 import { prisma } from "@/lib/prisma";
 
-const MAX_RECENT_CHATS = 20;
-const MAX_CHAT_LENGTH = 500;
+const MAX_RECENT_CHATS = 40;
+const MAX_CHAT_LENGTH = 200;
+const MAX_ELAPSED_SEC = 48 * 60 * 60;
 const NO_STORE = { "Cache-Control": "no-store" } as const;
 
-interface ChatEventInput {
-  userIdHash: string;
+interface DonationInput {
   nickname: string;
   message: string;
   cheeseAmount: number;
   recentChats: string[];
-  forceBriefing: boolean;
+  elapsedSec: number;
   isAnonymous: boolean;
 }
 
-export type EventSkipReason = "first-chat-off" | "known-viewer" | "below-minimum" | "anonymous-chat";
-
-export interface ChatEventResponse {
-  triggerType: BriefingTriggerType | null;
+export interface DonationResponse {
   briefing: BriefingCard | null;
-  viewer: {
-    nickname: string;
-    totalCheese: number;
-    visitCount: number;
-  } | null;
-  skipReason: EventSkipReason | null;
+  marker: HighlightMarkerCard | null;
+  skipReason: "below-minimum" | null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
-}
-
-function resolveTriggerType(cheeseAmount: number, isNew: boolean): BriefingTriggerType {
-  if (cheeseAmount > 0) {
-    return "CHEESE";
-  }
-  if (isNew) {
-    return "NEW_VIEWER";
-  }
-  return "RETURNING";
 }
 
 function readRecentChats(value: unknown): string[] {
@@ -70,7 +54,7 @@ function readRecentChats(value: unknown): string[] {
   return chats;
 }
 
-function readEventInput(value: unknown): ChatEventInput | null {
+function readDonation(value: unknown): DonationInput | null {
   if (!isRecord(value)) {
     return null;
   }
@@ -80,128 +64,56 @@ function readEventInput(value: unknown): ChatEventInput | null {
   if (rawHash.length > 128 || rawNick.length > 40) {
     return null;
   }
-  if (!anonymous && (rawHash.length === 0 || rawNick.length === 0)) {
+  if (!anonymous && rawNick.length === 0) {
     return null;
   }
-  if (typeof value.message !== "string" || value.message.length > MAX_CHAT_LENGTH) {
+  if (typeof value.message !== "string" || value.message.length > 500) {
     return null;
   }
-  const userIdHash = rawHash;
-  const nickname = anonymous ? ANONYMOUS_NICKNAME : rawNick;
   if (
     typeof value.cheeseAmount !== "number" ||
     !Number.isInteger(value.cheeseAmount) ||
-    value.cheeseAmount < 0 ||
+    value.cheeseAmount <= 0 ||
     value.cheeseAmount > 1_000_000_000
   ) {
     return null;
   }
+  const elapsedSec = value.elapsedSec;
+  if (
+    typeof elapsedSec !== "number" ||
+    !Number.isInteger(elapsedSec) ||
+    elapsedSec < 0 ||
+    elapsedSec > MAX_ELAPSED_SEC
+  ) {
+    return null;
+  }
   return {
-    userIdHash,
-    nickname,
+    nickname: anonymous ? ANONYMOUS_NICKNAME : rawNick,
     message: value.message.trim(),
     cheeseAmount: value.cheeseAmount,
     recentChats: readRecentChats(value.recentChats),
-    forceBriefing: value.forceBriefing === true,
+    elapsedSec,
     isAnonymous: anonymous,
   };
 }
 
-function toPerson(viewer: Viewer): BriefingPerson {
-  return {
-    userId: viewer.userId,
-    viewerId: viewer.id,
-    nickname: viewer.nickname,
-    totalCheese: viewer.totalCheese,
-    visitCount: viewer.visitCount,
-    storyMemo: viewer.storyMemo,
-    isAnonymous: false,
-  };
-}
-
-function viewerSnapshot(viewer: Pick<Viewer, "nickname" | "totalCheese" | "visitCount">): ChatEventResponse["viewer"] {
-  return {
-    nickname: viewer.nickname,
-    totalCheese: viewer.totalCheese,
-    visitCount: viewer.visitCount,
-  };
-}
-
-function skipped(skipReason: EventSkipReason, viewer: ChatEventResponse["viewer"] = null): Response {
-  const body: ChatEventResponse = { triggerType: null, briefing: null, viewer, skipReason };
-  return Response.json(body, { headers: NO_STORE });
-}
-
-async function publishBriefing(viewer: Viewer, input: ChatEventInput, isNew: boolean): Promise<Response> {
-  const triggerType = resolveTriggerType(input.cheeseAmount, isNew);
-  const briefing = await generateBriefing({
-    person: toPerson(viewer),
-    recentChats: input.recentChats.map((message) => ({ message })),
-    triggerType,
-    triggerMessage: input.message,
-    cheeseAmount: input.cheeseAmount,
-  });
-  const card = briefing
-    ? toBriefingCard(
-        await prisma.briefing.findUniqueOrThrow({
-          where: { id: briefing.id },
-          include: briefingInclude,
-        }),
-      )
-    : null;
-  const body: ChatEventResponse = {
-    triggerType: card ? triggerType : null,
-    briefing: card,
-    viewer: card ? card.viewer : viewerSnapshot(viewer),
-    skipReason: null,
-  };
-  return Response.json(body, { headers: NO_STORE });
-}
-
-async function publishAnonymous(user: User, input: ChatEventInput): Promise<Response> {
-  const briefing = await generateBriefing({
-    person: {
-      userId: user.id,
-      viewerId: null,
-      nickname: ANONYMOUS_NICKNAME,
-      totalCheese: 0,
-      visitCount: 0,
-      storyMemo: null,
-      isAnonymous: true,
-    },
-    recentChats: input.recentChats.map((message) => ({ message })),
-    triggerType: "CHEESE",
-    triggerMessage: input.message,
-    cheeseAmount: input.cheeseAmount,
-  });
-  const card = briefing
-    ? toBriefingCard(
-        await prisma.briefing.findUniqueOrThrow({
-          where: { id: briefing.id },
-          include: briefingInclude,
-        }),
-      )
-    : null;
-  const body: ChatEventResponse = {
-    triggerType: card ? "CHEESE" : null,
-    briefing: card,
-    viewer: null,
-    skipReason: null,
-  };
-  return Response.json(body, { headers: NO_STORE });
+function donationTitle(input: DonationInput): string {
+  const amount = input.cheeseAmount.toLocaleString("ko-KR");
+  return `${input.nickname} · ${amount} 치즈`;
 }
 
 /**
- * 식별된 후원은 항상 누적한다. 익명 후원은 시청자 행을 만들지 않고 카드만 남긴다.
+ * 이번 후원의 한 줄만 남긴다. 시청자 누적 행은 만들지 않는다.
+ * 1만 치즈 이상은 같은 시각의 편집 마커도 남긴다.
  */
 export async function POST(request: Request): Promise<Response> {
   await connection();
 
   try {
-    const input = readEventInput(await request.json());
+    const input = readDonation(await request.json());
     if (!input) {
       return Response.json(
-        { message: "userIdHash, nickname, message, cheeseAmount가 필요합니다." },
+        { message: "nickname, message, cheeseAmount, elapsedSec가 필요합니다." },
         { status: 400, headers: NO_STORE },
       );
     }
@@ -211,49 +123,48 @@ export async function POST(request: Request): Promise<Response> {
       return unauthorizedResponse();
     }
 
-    const now = new Date();
-    const viewerKey = { userId: user.id, userIdHash: input.userIdHash };
-
-    if (input.isAnonymous) {
-      if (input.cheeseAmount <= 0) {
-        return skipped("anonymous-chat");
-      }
-      if (!input.forceBriefing && input.cheeseAmount < user.minCheeseAmount) {
-        return skipped("below-minimum");
-      }
-      return await publishAnonymous(user, input);
+    if (input.cheeseAmount < user.minCheeseAmount) {
+      const body: DonationResponse = { briefing: null, marker: null, skipReason: "below-minimum" };
+      return Response.json(body, { headers: NO_STORE });
     }
 
-    if (input.cheeseAmount <= 0) {
-      return skipped("first-chat-off");
-    }
-
-    const viewer = await prisma.viewer.upsert({
-      where: { userId_userIdHash: viewerKey },
-      create: {
+    const summary = await summarizeDonation({
+      nickname: input.nickname,
+      message: input.message,
+      cheeseAmount: input.cheeseAmount,
+      recentChats: input.recentChats,
+      anonymous: input.isAnonymous,
+    });
+    const briefing = await prisma.briefing.create({
+      data: {
         userId: user.id,
-        userIdHash: input.userIdHash,
-        nickname: input.nickname,
-        totalCheese: input.cheeseAmount,
-        visitCount: 1,
-        lastSeenAt: now,
-      },
-      update: {
-        nickname: input.nickname,
-        totalCheese: { increment: input.cheeseAmount },
-        visitCount: { increment: 1 },
-        lastSeenAt: now,
+        type: "DONATION",
+        title: donationTitle(input),
+        summary,
+        signal: null,
       },
     });
+    const marker =
+      input.cheeseAmount >= HIGH_CHEESE
+        ? await prisma.highlightMarker.create({
+            data: {
+              userId: user.id,
+              timestampSec: input.elapsedSec,
+              formattedTime: formatBroadcastTime(input.elapsedSec),
+              reason: summary,
+            },
+          })
+        : null;
 
-    if (!input.forceBriefing && input.cheeseAmount < user.minCheeseAmount) {
-      return skipped("below-minimum", viewerSnapshot(viewer));
-    }
-
-    return await publishBriefing(viewer, input, false);
+    const body: DonationResponse = {
+      briefing: toBriefingCard(briefing),
+      marker: marker ? toMarkerCard(marker) : null,
+      skipReason: null,
+    };
+    return Response.json(body, { headers: NO_STORE });
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : "이벤트를 저장하지 못했습니다.";
+    const message = error instanceof Error ? error.message : "후원을 저장하지 못했습니다.";
     console.error(`[POST /api/events] ${message}`);
-    return Response.json({ message: "이벤트를 저장하지 못했습니다." }, { status: 500, headers: NO_STORE });
+    return Response.json({ message: "후원을 저장하지 못했습니다." }, { status: 500, headers: NO_STORE });
   }
 }
