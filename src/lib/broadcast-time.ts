@@ -34,15 +34,21 @@ export function formatBroadcastTime(totalSec: number): string {
   return [hours, minutes, seconds].map((part) => String(part).padStart(2, "0")).join(":");
 }
 
-let startedAt = 0;
+let originMs: number | null = null;
 
-/** 이 브라우저 탭에서 상황판이 열린 시각부터 센다. 서버 렌더에서는 0이다. */
+/** 실시간 연결이 켜질 때만 기준 시각을 둔다. 끄면 경과를 0으로 되돌린다. */
+export function armBroadcastClock(origin: number): void {
+  originMs = Number.isFinite(origin) ? origin : null;
+}
+
+export function stopBroadcastClock(): void {
+  originMs = null;
+}
+
+/** 연결 기준 시각부터의 경과 초. 대기 중이면 0이다. */
 export function broadcastElapsedSec(nowMs = Date.now()): number {
-  if (typeof window === "undefined") {
+  if (originMs === null) {
     return 0;
   }
-  if (startedAt === 0) {
-    startedAt = nowMs;
-  }
-  return Math.max(0, Math.floor((nowMs - startedAt) / 1000));
+  return Math.max(0, Math.floor((nowMs - originMs) / 1000));
 }

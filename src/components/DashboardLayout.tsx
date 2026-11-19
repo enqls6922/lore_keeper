@@ -5,7 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { useChzzkChat } from "@/hooks/useChzzkChat";
-import { broadcastElapsedSec, formatBroadcastTime } from "@/lib/broadcast-time";
+import { armBroadcastClock, broadcastElapsedSec, formatBroadcastTime, stopBroadcastClock } from "@/lib/broadcast-time";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { DEFAULT_MIN_CHEESE, isCheesePreset, type CheesePreset } from "@/lib/stream-settings";
 
@@ -23,6 +23,14 @@ const TITLES: Record<string, string> = {
   "/integrations": "OBS · 편집자 연동",
   "/settings": "방송 PD 설정",
   "/billing": "플랜 · 사용량",
+};
+
+const SHORT_TITLES: Record<string, string> = {
+  "/": "상황판",
+  "/timeline": "타임라인",
+  "/integrations": "연동",
+  "/settings": "설정",
+  "/billing": "플랜",
 };
 
 export interface StudioAccount {
@@ -44,6 +52,7 @@ interface StudioContextValue {
   savingSettings: boolean;
   saveSettings: () => Promise<boolean>;
   chatEnabled: boolean;
+  liveSynced: boolean;
   toggleChat: () => void;
   liveTitle: string | null;
   chatError: string | null;
@@ -64,6 +73,13 @@ export function useStudio(): StudioContextValue {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isLiveClock(value: unknown): value is { synced: boolean; openDateMs: number | null } {
+  if (!isRecord(value) || typeof value.synced !== "boolean") {
+    return false;
+  }
+  return value.openDateMs === null || typeof value.openDateMs === "number";
 }
 
 function readAccount(value: unknown): StudioAccount | null {
@@ -105,12 +121,15 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
   const [minCheeseAmount, setMinCheeseAmount] = useState<CheesePreset>(DEFAULT_MIN_CHEESE);
   const [savingSettings, setSavingSettings] = useState(false);
   const [chatEnabled, setChatEnabled] = useState(false);
+  const [liveSynced, setLiveSynced] = useState(false);
+  const [linking, setLinking] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [wakeOn, setWakeOn] = useState(false);
   const [wakeSupported, setWakeSupported] = useState(true);
   const [nowMs, setNowMs] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
   const wakeLock = useRef<WakeLockSentinel | null>(null);
+  const linkSeq = useRef(0);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chat = useChzzkChat(channelId, chatEnabled);
 
@@ -123,8 +142,12 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
   }, []);
 
   const setChannelId = useCallback((value: string) => {
+    linkSeq.current += 1;
     setChannelIdState(value);
+    stopBroadcastClock();
+    setLiveSynced(false);
     setChatEnabled(false);
+    setLinking(false);
   }, []);
 
   useEffect(() => {
@@ -264,14 +287,50 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
   }
 
   const toggleChat = useCallback((): void => {
+    if (linking) {
+      return;
+    }
     if (channelId.trim().length === 0) {
       notify("PD 설정에서 채널 ID를 먼저 저장해 주세요.");
       return;
     }
-    setChatEnabled((current) => !current);
-  }, [channelId, notify]);
+    if (chatEnabled) {
+      stopBroadcastClock();
+      setLiveSynced(false);
+      setChatEnabled(false);
+      return;
+    }
+    const seq = linkSeq.current + 1;
+    linkSeq.current = seq;
+    setLinking(true);
+    void (async () => {
+      let synced = false;
+      let origin = Date.now();
+      try {
+        const response = await fetch(`/api/chzzk/status?channelId=${encodeURIComponent(channelId.trim())}`, {
+          cache: "no-store",
+        });
+        const payload: unknown = await response.json().catch(() => null);
+        if (response.ok && isLiveClock(payload) && payload.synced && payload.openDateMs !== null) {
+          synced = true;
+          origin = payload.openDateMs;
+        }
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : "방송 시각 확인 실패";
+        console.error(`[방송 시각] ${message}`);
+      }
+      if (seq !== linkSeq.current) {
+        return;
+      }
+      armBroadcastClock(origin);
+      setLiveSynced(synced);
+      setChatEnabled(true);
+      setLinking(false);
+    })();
+  }, [channelId, chatEnabled, linking, notify]);
 
-  const elapsedLabel = nowMs === 0 ? "00:00:00" : formatBroadcastTime(broadcastElapsedSec(nowMs));
+  const elapsedLabel =
+    !chatEnabled || nowMs === 0 ? "00:00:00" : formatBroadcastTime(broadcastElapsedSec(nowMs));
   const value: StudioContextValue = {
     account,
     channelId,
@@ -281,6 +340,7 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
     savingSettings,
     saveSettings,
     chatEnabled,
+    liveSynced,
     toggleChat,
     liveTitle: chat.liveTitle,
     chatError: chat.errorMessage,
@@ -354,7 +414,7 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
         </aside>
 
         <div className="md:pl-64">
-          <header className="sticky top-0 z-20 flex h-16 items-center gap-2 border-b border-white/10 bg-[#121418] px-2 sm:gap-3 sm:px-4">
+          <header className="sticky top-0 z-20 flex h-16 items-center gap-1 overflow-hidden border-b border-white/10 bg-[#121418] px-2 sm:gap-3 sm:px-4">
             <button
               type="button"
               className="flex h-9 w-9 flex-col items-center justify-center gap-1 rounded-lg border border-white/10 md:hidden"
@@ -369,9 +429,17 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
               <span className="block h-0.5 w-4 bg-white" />
               <span className="block h-0.5 w-4 bg-white" />
             </button>
-            <h1 className="w-24 shrink-0 truncate text-xs font-extrabold sm:w-auto sm:min-w-0 sm:flex-1 sm:text-base">{title}</h1>
-            <div className="flex shrink-0 items-center gap-2">
+            <h1 className="shrink-0 text-xs font-extrabold sm:min-w-0 sm:flex-1 sm:truncate sm:text-base">
+              <span className="sm:hidden">{SHORT_TITLES[pathname] ?? "PD"}</span>
+              <span className="hidden sm:inline">{title}</span>
+            </h1>
+            <div className="flex shrink-0 items-center gap-1 sm:gap-2">
               <span className="font-mono text-xs font-bold text-[#AEB6C9] sm:text-sm">{elapsedLabel}</span>
+              {chatEnabled && liveSynced ? (
+                <span className="whitespace-nowrap rounded-full border border-[#FF5A5A]/50 px-1.5 py-0.5 text-[10px] font-extrabold text-[#FF5A5A]">
+                  LIVE 동기화
+                </span>
+              ) : null}
               <button
                 type="button"
                 onClick={() => {
@@ -394,11 +462,12 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
               <button
                 type="button"
                 onClick={toggleChat}
-                className={`whitespace-nowrap rounded-full px-2 py-1.5 text-[11px] font-extrabold sm:px-4 sm:py-2 sm:text-sm ${
+                disabled={linking}
+                className={`whitespace-nowrap rounded-full px-2 py-1.5 text-[11px] font-extrabold disabled:opacity-50 sm:px-4 sm:py-2 sm:text-sm ${
                   chatEnabled ? "border border-white/10 text-white" : "bg-[#00FFA3] text-[#090A0B]"
                 }`}
               >
-                {chatEnabled ? "연결 중지" : "실시간 연결"}
+                {linking ? "연결 중" : chatEnabled ? "연결 중지" : "실시간 연결"}
               </button>
             </div>
           </header>

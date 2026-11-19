@@ -89,6 +89,61 @@ function readCategory(content: Record<string, unknown>): string | null {
   return null;
 }
 
+export interface LiveClock {
+  synced: boolean;
+  openDateMs: number | null;
+  liveTitle: string | null;
+}
+
+/**
+ * 치지직 `openDate`는 시간대 없는 서울 시각이다.
+ * `YYYY-MM-DD HH:mm:ss`는 KST로 읽고, 이미 오프셋이 있으면 그대로 읽는다.
+ */
+export function parseOpenDateMs(value: string): number | null {
+  const trimmed = value.trim();
+  const plain = trimmed.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.\d+)?$/);
+  const iso = plain ? `${plain[1]}T${plain[2]}+09:00` : trimmed;
+  const ms = new Date(iso).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/** 생방송이면 시작 시각을, 아니면 동기화하지 않은 결과를 돌려준다. */
+export async function fetchChzzkLiveClock(channelId: string): Promise<LiveClock> {
+  const empty: LiveClock = { synced: false, openDateMs: null, liveTitle: null };
+  const encoded = encodeURIComponent(channelId);
+  try {
+    const response = await fetch(`https://api.chzzk.naver.com/service/v2/channels/${encoded}/live-detail`, {
+      headers: CHZZK_HEADERS,
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      return empty;
+    }
+    const payload: unknown = await response.json();
+    if (!isRecord(payload)) {
+      return empty;
+    }
+    const content = isRecord(payload.content) ? payload.content : payload;
+    const nestedLive = isRecord(content.live) ? content.live : null;
+    const status = readString(content.status) ?? (nestedLive ? readString(nestedLive.status) : null);
+    const openDate = readString(content.openDate) ?? (nestedLive ? readString(nestedLive.openDate) : null);
+    const liveTitle =
+      readString(content.liveTitle) ?? (nestedLive ? readString(nestedLive.liveTitle) : null);
+    if (status !== "OPEN" || !openDate) {
+      return { synced: false, openDateMs: null, liveTitle };
+    }
+    const openDateMs = parseOpenDateMs(openDate);
+    if (openDateMs === null) {
+      return { synced: false, openDateMs: null, liveTitle };
+    }
+    return { synced: true, openDateMs, liveTitle };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "upstream";
+    console.error(`[chzzk clock] ${message}`);
+    return empty;
+  }
+}
+
 /** 방송 중이면 제목과 카테고리를 가져온다. 없으면 빈 값으로 둔다. */
 export async function fetchChzzkBroadcastContext(channelId: string): Promise<{
   title: string | null;
