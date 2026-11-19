@@ -1,4 +1,5 @@
 import type { HighlightMarkerCard } from "@/lib/briefing-card";
+import { stripChzzkEmotes } from "@/lib/chzzk/text";
 
 export function sessionHeading(sessionDate: string): string {
   return sessionDate.replaceAll("-", ".");
@@ -24,7 +25,7 @@ export function groupMarkers(markers: HighlightMarkerCard[]): Array<[string, Hig
 export function timelineText(markers: HighlightMarkerCard[]): string {
   return groupMarkers(markers)
     .map(([sessionDate, list]) => {
-      const lines = list.map((marker) => `${marker.formattedTime} - ${marker.summary}`);
+      const lines = list.map((marker) => `${marker.formattedTime} - ${stripChzzkEmotes(marker.summary)}`);
       return [`[${sessionHeading(sessionDate)} 방송 하이라이트]`, ...lines].join("\n");
     })
     .join("\n\n");
@@ -57,7 +58,7 @@ export function TimelineList({
             {list.map((marker) => (
               <li key={marker.id} className="flex items-start gap-2 text-sm font-bold leading-6 text-white">
                 <span className="shrink-0 text-[#FFB800]">{marker.formattedTime}</span>
-                <span className="min-w-0 flex-1">{marker.summary}</span>
+                <span className="min-w-0 flex-1">{stripChzzkEmotes(marker.summary)}</span>
                 {onDelete ? (
                   <button
                     type="button"

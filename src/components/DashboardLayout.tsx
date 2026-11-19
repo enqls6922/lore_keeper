@@ -121,6 +121,7 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
   const [minCheeseAmount, setMinCheeseAmount] = useState<CheesePreset>(DEFAULT_MIN_CHEESE);
   const [savingSettings, setSavingSettings] = useState(false);
   const [chatEnabled, setChatEnabled] = useState(false);
+  const [waiting, setWaiting] = useState(false);
   const [liveSynced, setLiveSynced] = useState(false);
   const [linking, setLinking] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -146,6 +147,7 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
     setChannelIdState(value);
     stopBroadcastClock();
     setLiveSynced(false);
+    setWaiting(false);
     setChatEnabled(false);
     setLinking(false);
   }, []);
@@ -286,6 +288,22 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
     await requestWakeLock();
   }
 
+  const loadOpenDate = useCallback(async (id: string): Promise<number | null> => {
+    const response = await fetch(`/api/chzzk/status?channelId=${encodeURIComponent(id)}`, { cache: "no-store" });
+    const payload: unknown = await response.json().catch(() => null);
+    if (response.ok && isLiveClock(payload) && payload.synced && payload.openDateMs !== null) {
+      return payload.openDateMs;
+    }
+    return null;
+  }, []);
+
+  const beginLive = useCallback((origin: number): void => {
+    armBroadcastClock(origin);
+    setLiveSynced(true);
+    setWaiting(false);
+    setChatEnabled(true);
+  }, []);
+
   const toggleChat = useCallback((): void => {
     if (linking) {
       return;
@@ -294,9 +312,11 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
       notify("PD 설정에서 채널 ID를 먼저 저장해 주세요.");
       return;
     }
-    if (chatEnabled) {
+    if (chatEnabled || waiting) {
+      linkSeq.current += 1;
       stopBroadcastClock();
       setLiveSynced(false);
+      setWaiting(false);
       setChatEnabled(false);
       return;
     }
@@ -304,17 +324,9 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
     linkSeq.current = seq;
     setLinking(true);
     void (async () => {
-      let synced = false;
-      let origin = Date.now();
+      let origin: number | null = null;
       try {
-        const response = await fetch(`/api/chzzk/status?channelId=${encodeURIComponent(channelId.trim())}`, {
-          cache: "no-store",
-        });
-        const payload: unknown = await response.json().catch(() => null);
-        if (response.ok && isLiveClock(payload) && payload.synced && payload.openDateMs !== null) {
-          synced = true;
-          origin = payload.openDateMs;
-        }
+        origin = await loadOpenDate(channelId.trim());
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : "방송 시각 확인 실패";
         console.error(`[방송 시각] ${message}`);
@@ -322,15 +334,48 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
       if (seq !== linkSeq.current) {
         return;
       }
-      armBroadcastClock(origin);
-      setLiveSynced(synced);
-      setChatEnabled(true);
+      if (origin !== null) {
+        beginLive(origin);
+      } else {
+        stopBroadcastClock();
+        setLiveSynced(false);
+        setChatEnabled(false);
+        setWaiting(true);
+      }
       setLinking(false);
     })();
-  }, [channelId, chatEnabled, linking, notify]);
+  }, [beginLive, channelId, chatEnabled, linking, loadOpenDate, notify, waiting]);
+
+  useEffect(() => {
+    if (!waiting) {
+      return;
+    }
+    const seq = linkSeq.current;
+    const id = channelId.trim();
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      void (async () => {
+        try {
+          const origin = await loadOpenDate(id);
+          if (cancelled || seq !== linkSeq.current || origin === null) {
+            return;
+          }
+          beginLive(origin);
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : "방송 시각 확인 실패";
+          console.error(`[방송 대기] ${message}`);
+        }
+      })();
+    }, 15_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [beginLive, channelId, loadOpenDate, waiting]);
 
   const elapsedLabel =
     !chatEnabled || nowMs === 0 ? "00:00:00" : formatBroadcastTime(broadcastElapsedSec(nowMs));
+  const linkOn = chatEnabled || waiting;
   const value: StudioContextValue = {
     account,
     channelId,
@@ -440,6 +485,11 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
                   LIVE 동기화
                 </span>
               ) : null}
+              {waiting ? (
+                <span className="whitespace-nowrap rounded-full border border-[#FFB800]/50 px-1.5 py-0.5 text-[10px] font-extrabold text-[#FFB800]">
+                  방송 대기 중
+                </span>
+              ) : null}
               <button
                 type="button"
                 onClick={() => {
@@ -464,14 +514,19 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
                 onClick={toggleChat}
                 disabled={linking}
                 className={`whitespace-nowrap rounded-full px-2 py-1.5 text-[11px] font-extrabold disabled:opacity-50 sm:px-4 sm:py-2 sm:text-sm ${
-                  chatEnabled ? "border border-white/10 text-white" : "bg-[#00FFA3] text-[#090A0B]"
+                  linkOn ? "border border-white/10 text-white" : "bg-[#00FFA3] text-[#090A0B]"
                 }`}
               >
-                {linking ? "연결 중" : chatEnabled ? "연결 중지" : "실시간 연결"}
+                {linking ? "연결 중" : linkOn ? "연결 중지" : "실시간 연결"}
               </button>
             </div>
           </header>
-          {chat.liveTitle || chat.errorMessage ? (
+          {waiting ? (
+            <p className="border-b border-white/10 bg-[#121418] px-4 py-2 text-sm font-semibold text-[#FFB800]">
+              현재 오프라인입니다. 방송이 시작되면 자동으로 동기화됩니다.
+            </p>
+          ) : null}
+          {!waiting && (chat.liveTitle || chat.errorMessage) ? (
             <p className="border-b border-white/10 bg-[#121418] px-4 py-2 text-sm font-semibold text-[#AEB6C9]">
               {chat.errorMessage ? <span className="text-[#FFB4B4]">{chat.errorMessage}</span> : chat.liveTitle}
             </p>

@@ -1,3 +1,4 @@
+import { stripChzzkEmotes } from "@/lib/chzzk/text";
 import {
   compareDonations,
   cumulativeLabel,
@@ -47,7 +48,7 @@ export function PdFeed({
                   {banner.icon} {banner.title}
                 </p>
                 <p className={`mt-1 font-bold leading-snug text-white ${compact ? "text-base" : "text-lg"}`}>
-                  {card.summary}
+                  {stripChzzkEmotes(card.summary)}
                 </p>
               </article>
             );
@@ -98,7 +99,7 @@ export function PdFeed({
                     ) : null}
                   </div>
                 </div>
-                <p className="mt-2 text-base font-bold leading-snug text-white">{card.summary}</p>
+                <p className="mt-2 text-base font-bold leading-snug text-white">{stripChzzkEmotes(card.summary)}</p>
               </article>
             );
           })

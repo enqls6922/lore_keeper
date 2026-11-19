@@ -102,6 +102,9 @@ function rememberChat(buffer: TimedChat[], times: number[], event: ChzzkInboundE
 }
 
 function handleInbound(event: ChzzkInboundEvent, buffer: TimedChat[], times: number[]): void {
+  if (event.message.length === 0 && event.cheeseAmount <= 0) {
+    return;
+  }
   if (event.cheeseAmount <= 0) {
     rememberChat(buffer, times, event);
     return;
@@ -111,7 +114,9 @@ function handleInbound(event: ChzzkInboundEvent, buffer: TimedChat[], times: num
     const text = error instanceof Error ? error.message : "후원 저장 실패";
     console.error(`[치지직] ${text}`);
   });
-  rememberChat(buffer, times, event);
+  if (event.message.length > 0) {
+    rememberChat(buffer, times, event);
+  }
 }
 
 async function postRadar(triggers: RadarTrigger[], messages: string[]): Promise<void> {
