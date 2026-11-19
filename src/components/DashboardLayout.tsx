@@ -10,19 +10,19 @@ import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { DEFAULT_MIN_CHEESE, isCheesePreset, type CheesePreset } from "@/lib/stream-settings";
 
 const NAV = [
-  { href: "/", label: "실시간 상황판" },
-  { href: "/timeline", label: "편집 타임라인" },
-  { href: "/integrations", label: "OBS · 공유 연동" },
-  { href: "/settings", label: "PD 설정" },
-  { href: "/billing", label: "플랜 · 결제" },
+  { href: "/", label: "📡 실시간 상황판" },
+  { href: "/timeline", label: "🎬 타임라인 · AI 패키징" },
+  { href: "/integrations", label: "🔗 OBS · 편집자 연동" },
+  { href: "/settings", label: "⚙️ 방송 PD 설정" },
+  { href: "/billing", label: "💳 플랜 · 사용량" },
 ] as const;
 
 const TITLES: Record<string, string> = {
   "/": "실시간 상황판",
-  "/timeline": "편집 타임라인",
-  "/integrations": "OBS · 공유 연동",
-  "/settings": "PD 설정",
-  "/billing": "플랜 · 결제",
+  "/timeline": "타임라인 · AI 패키징",
+  "/integrations": "OBS · 편집자 연동",
+  "/settings": "방송 PD 설정",
+  "/billing": "플랜 · 사용량",
 };
 
 export interface StudioAccount {

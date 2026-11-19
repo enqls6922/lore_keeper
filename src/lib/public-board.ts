@@ -1,6 +1,7 @@
 import { toBriefingCard, toMarkerCard } from "@/lib/briefing-mapper";
 import type { BriefingCard, HighlightMarkerCard } from "@/lib/briefing-card";
 import { prisma } from "@/lib/prisma";
+import { toReportCard, type StreamReportCard } from "@/lib/stream-report";
 
 const TOKEN_LENGTH = 36;
 
@@ -34,15 +35,31 @@ export async function boardForObsToken(token: string): Promise<{
   };
 }
 
-export async function markersForShareToken(token: string): Promise<HighlightMarkerCard[] | null> {
+export async function shareBoardForToken(token: string): Promise<{
+  markers: HighlightMarkerCard[];
+  reports: StreamReportCard[];
+} | null> {
   const user = await prisma.user.findUnique({ where: { editorShareToken: token } });
   if (!user) {
     return null;
   }
-  const rows = await prisma.highlightMarker.findMany({
-    where: { userId: user.id },
-    orderBy: [{ sessionDate: "desc" }, { elapsedSec: "asc" }],
-    take: 200,
-  });
-  return rows.map(toMarkerCard);
+  const [markers, reports] = await Promise.all([
+    prisma.highlightMarker.findMany({
+      where: { userId: user.id },
+      orderBy: [{ sessionDate: "desc" }, { elapsedSec: "asc" }],
+      take: 200,
+    }),
+    prisma.streamReport.findMany({
+      where: { userId: user.id },
+      orderBy: { sessionDate: "desc" },
+      take: 60,
+    }),
+  ]);
+  return {
+    markers: markers.map(toMarkerCard),
+    reports: reports.flatMap((row) => {
+      const card = toReportCard(row);
+      return card ? [card] : [];
+    }),
+  };
 }

@@ -3,13 +3,20 @@
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
-import { TimelineList, timelineText } from "@/components/timeline-list";
+import { PackagingView } from "@/components/packaging-view";
+import { TimelineList, sessionHeading, timelineText } from "@/components/timeline-list";
 import { isHighlightMarkerList, type HighlightMarkerCard } from "@/lib/briefing-card";
+import { isStreamReportList, type StreamReportCard } from "@/lib/stream-report";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
 
 export function ShareBoard() {
   const params = useParams<{ token: string }>();
   const token = typeof params.token === "string" ? params.token : "";
   const [markers, setMarkers] = useState<HighlightMarkerCard[]>([]);
+  const [reports, setReports] = useState<StreamReportCard[]>([]);
   const [missing, setMissing] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
@@ -27,8 +34,9 @@ export function ShareBoard() {
         return;
       }
       const payload: unknown = await response.json().catch(() => null);
-      if (!cancelled && response.ok && isHighlightMarkerList(payload)) {
-        setMarkers(payload);
+      if (!cancelled && response.ok && isRecord(payload) && isHighlightMarkerList(payload.markers) && isStreamReportList(payload.reports)) {
+        setMarkers(payload.markers);
+        setReports(payload.reports);
       }
     }
     void load();
@@ -75,6 +83,18 @@ export function ShareBoard() {
             📋 편집자용 타임라인 텍스트 복사
           </button>
           <TimelineList markers={markers} />
+          {reports.map((report) => (
+            <section key={report.id} className="flex flex-col gap-3">
+              <h2 className="text-base font-extrabold">{sessionHeading(report.sessionDate)} 패키징</h2>
+              <PackagingView
+                report={report}
+                surface="compact"
+                onCopy={(message) => {
+                  setToast(message);
+                }}
+              />
+            </section>
+          ))}
         </>
       )}
       {toast ? <p className="text-sm font-bold text-[#00FFA3]">{toast}</p> : null}

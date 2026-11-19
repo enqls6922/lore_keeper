@@ -21,6 +21,7 @@ model User {
   viewers          Viewer[]
   briefings        Briefing[]
   markers          HighlightMarker[]
+  reports          StreamReport[]
 }
 
 /// 조용한 누적 치즈. 방문 횟수와 사연은 두지 않는다.
@@ -61,4 +62,18 @@ model HighlightMarker {
   triggerType   String // "CHAT_SPIKE" | "BIG_DONATION"
   summary       String
   createdAt     DateTime @default(now())
+}
+
+/// 방종 후 유튜브·쇼츠·팬카페에 붙이는 회차 패키지.
+model StreamReport {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessionDate     String // YYYY-MM-DD
+  youtubeChapters String
+  shortsIdeas     Json
+  fanCafeDigest   String
+  createdAt       DateTime @default(now())
+
+  @@unique([userId, sessionDate])
 }
