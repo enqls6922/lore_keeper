@@ -1,6 +1,7 @@
 import type { Briefing, HighlightMarker } from "@prisma/client";
 
 import type { BriefingCard, HighlightMarkerCard } from "@/lib/briefing-card";
+import { stripChzzkEmotes } from "@/lib/chzzk/text";
 import { isBriefingCategory, isMarkerTrigger } from "@/lib/chat-radar";
 
 export function toBriefingCard(row: Briefing): BriefingCard {
@@ -11,7 +12,7 @@ export function toBriefingCard(row: Briefing): BriefingCard {
     nickname: row.nickname,
     cheeseAmount: row.cheeseAmount,
     totalCheeseSnapshot: row.totalCheeseSnapshot,
-    summary: row.summary,
+    summary: stripChzzkEmotes(row.summary),
     isPinned: row.isPinned,
     createdAt: row.createdAt.toISOString(),
   };
@@ -24,7 +25,7 @@ export function toMarkerCard(row: HighlightMarker): HighlightMarkerCard {
     elapsedSec: row.elapsedSec,
     formattedTime: row.formattedTime,
     triggerType: isMarkerTrigger(row.triggerType) ? row.triggerType : "CHAT_SPIKE",
-    summary: row.summary,
+    summary: stripChzzkEmotes(row.summary),
     createdAt: row.createdAt.toISOString(),
   };
 }

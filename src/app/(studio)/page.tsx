@@ -8,6 +8,7 @@ import { PdFeed } from "@/components/pd-feed";
 import { useStudio } from "@/components/DashboardLayout";
 import { isBriefingCard, isBriefingCardList, isHighlightMarkerList, isRadarVisible, type BriefingCard, type HighlightMarkerCard } from "@/lib/briefing-card";
 import { isSeoulToday, seoulSessionDate } from "@/lib/broadcast-time";
+import { stripChzzkEmotes } from "@/lib/chzzk/text";
 
 const POLL_MS = 2_000;
 
@@ -144,7 +145,7 @@ export default function HomePage() {
                   <li key={marker.id} className="text-sm font-bold leading-6 text-white">
                     <span className="text-[#FFB800]">{marker.formattedTime}</span>
                     <span className="text-[#8B93A7]"> · </span>
-                    {marker.summary}
+                    {stripChzzkEmotes(marker.summary)}
                   </li>
                 ))}
               </ul>
