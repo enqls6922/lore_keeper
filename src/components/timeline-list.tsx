@@ -33,14 +33,17 @@ export function timelineText(markers: HighlightMarkerCard[]): string {
 export function TimelineList({
   markers,
   onDelete,
+  surface = "compact",
 }: {
   markers: HighlightMarkerCard[];
   onDelete?: (marker: HighlightMarkerCard) => void;
+  surface?: "compact" | "studio";
 }) {
+  const card = surface === "studio" ? "border-white/10 bg-[#16181E]" : "border-white/10 bg-[#16181C]";
   const groups = groupMarkers(markers);
   if (groups.length === 0) {
     return (
-      <p className="rounded-[20px] border border-white/10 bg-[#16181C] px-4 py-6 text-sm font-semibold leading-6 text-[#8B93A7]">
+      <p className={`rounded-[20px] border px-4 py-6 text-sm font-semibold leading-6 text-[#8B93A7] ${card}`}>
         아직 찍힌 하이라이트가 없습니다. 채팅 화력이나 1만 치즈 이상 후원이 오면 여기에 쌓입니다.
       </p>
     );
@@ -48,7 +51,7 @@ export function TimelineList({
   return (
     <div className="flex flex-col gap-4">
       {groups.map(([sessionDate, list]) => (
-        <section key={sessionDate} className="rounded-[22px] border border-white/10 bg-[#16181C] px-4 py-4">
+        <section key={sessionDate} className={`rounded-[22px] border px-4 py-4 ${card}`}>
           <h2 className="text-sm font-extrabold text-[#00FFA3]">{sessionHeading(sessionDate)} 방송</h2>
           <ul className="mt-3 flex flex-col gap-2">
             {list.map((marker) => (

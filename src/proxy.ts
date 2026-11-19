@@ -3,6 +3,16 @@ import { NextResponse, type NextRequest } from "next/server";
 
 import { readSupabasePublicEnv } from "@/lib/supabase/env";
 
+function isStudioPage(path: string): boolean {
+  return (
+    path === "/" ||
+    path === "/timeline" ||
+    path === "/integrations" ||
+    path === "/settings" ||
+    path === "/billing"
+  );
+}
+
 function isPublicBoard(path: string): boolean {
   return (
     path.startsWith("/dock/") ||
@@ -35,7 +45,7 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
     if (path.startsWith("/api/")) {
       return NextResponse.json({ message: "로그인이 필요합니다." }, { status: 401 });
     }
-    if (path === "/" || path === "/timeline") {
+    if (isStudioPage(path)) {
       return NextResponse.redirect(new URL("/login", request.url));
     }
     return response;
@@ -61,7 +71,7 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
   const { data } = await supabase.auth.getUser();
   const user = data.user;
 
-  if (!user && (path === "/" || path === "/timeline")) {
+  if (!user && isStudioPage(path)) {
     return copyCookies(response, NextResponse.redirect(new URL("/login", request.url)));
   }
   if (!user && path.startsWith("/api/")) {

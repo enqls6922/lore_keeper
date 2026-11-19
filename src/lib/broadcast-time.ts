@@ -1,3 +1,15 @@
+/** 시각이 서울 기준 오늘인지 본다. 시계가 아직 0이면 오늘로 세지 않는다. */
+export function isSeoulToday(iso: string, nowMs: number): boolean {
+  if (nowMs <= 0) {
+    return false;
+  }
+  const created = new Date(iso);
+  if (Number.isNaN(created.getTime())) {
+    return false;
+  }
+  return seoulSessionDate(created) === seoulSessionDate(new Date(nowMs));
+}
+
 /** 서울 날짜의 방송 회차 키. `YYYY-MM-DD`. */
 export function seoulSessionDate(now = new Date()): string {
   return new Intl.DateTimeFormat("en-CA", {
