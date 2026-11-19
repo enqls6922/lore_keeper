@@ -2,8 +2,10 @@ import { GoogleGenerativeAI, SchemaType, type GenerationConfig } from "@google/g
 
 import {
   COACHING_SUMMARY,
+  RADAR_SAMPLE_LIMIT,
   SUMMARY_LIMIT,
   clipText,
+  prepareRadarMessages,
   hasIssueKeyword,
   hasQuestionMark,
   mentionsLoyalty,
@@ -72,7 +74,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function chatBlock(messages: string[], limit: number): string {
-  const lines = messages.map(stripChzzkEmotes).filter((line) => line.length > 0).slice(-limit);
+  const lines = prepareRadarMessages(messages).slice(0, limit);
   return lines.length > 0 ? lines.map((message) => `- ${message}`).join("\n") : "- (최근 채팅 없음)";
 }
 
@@ -153,7 +155,7 @@ function fallbackSpike(messages: string[]): string {
 export async function summarizeSpike(messages: string[]): Promise<string> {
   const fallback = fallbackSpike(messages);
   const raw = await askModel(
-    `[채팅 화력]\n최근 60초 채팅이 직전보다 급증했다. 시청자 문장을 베끼지 말고 25자 이내 보고체로 적어라.\n\n${chatBlock(messages, 40)}`,
+    `[채팅 화력]\n최근 3분 채팅이 급증했다. 초반 원인과 후반 반응을 보고, 시청자 문장을 베끼지 말고 25자 이내 보고체로 적어라.\n\n${chatBlock(messages, RADAR_SAMPLE_LIMIT)}`,
     summaryConfig,
   );
   if (!raw) {
@@ -190,7 +192,7 @@ function fallbackIssue(messages: string[]): IssueJudgement {
 export async function judgeIssue(messages: string[]): Promise<IssueJudgement> {
   const fallback = fallbackIssue(messages);
   const raw = await askModel(
-    `[집단 의도]\n아래 채팅이 실제 방송 사고(ISSUE)이거나 여러 사람이 같은 질문을 하는지(QUESTION)만 판단해라. 잡담이면 shouldAlert는 false다.\n\n${chatBlock(messages, 40)}`,
+    `[집단 의도]\n아래 채팅이 실제 방송 사고(ISSUE)이거나 여러 사람이 같은 질문을 하는지(QUESTION)만 판단해라. 잡담이면 shouldAlert는 false다.\n\n${chatBlock(messages, RADAR_SAMPLE_LIMIT)}`,
     issueConfig,
   );
   if (!raw) {

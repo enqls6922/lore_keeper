@@ -4,11 +4,11 @@ import { requireUser, unauthorizedResponse } from "@/lib/auth/current-user";
 import { toBriefingCard, toMarkerCard } from "@/lib/briefing-mapper";
 import type { BriefingCard, HighlightMarkerCard } from "@/lib/briefing-card";
 import { formatBroadcastTime, seoulSessionDate } from "@/lib/broadcast-time";
-import { isRadarTrigger, type RadarTrigger } from "@/lib/chat-radar";
+import { isRadarTrigger, prepareRadarMessages, type RadarTrigger } from "@/lib/chat-radar";
 import { coachingSummary, judgeIssue, summarizeSpike } from "@/lib/llm/pd";
 import { prisma } from "@/lib/prisma";
 
-const MAX_MESSAGES = 150;
+const MAX_MESSAGES = 1_000;
 const MAX_CHAT_LENGTH = 200;
 const MAX_ELAPSED_SEC = 48 * 60 * 60;
 const NO_STORE = { "Cache-Control": "no-store" } as const;
@@ -85,8 +85,10 @@ export async function POST(request: Request): Promise<Response> {
     const briefings: BriefingCard[] = [];
     const markers: HighlightMarkerCard[] = [];
 
-    if (input.triggers.includes("SPIKE") && input.messages.length >= 15) {
-      const summary = await summarizeSpike(input.messages);
+    const prepared = prepareRadarMessages(input.messages);
+
+    if (input.triggers.includes("SPIKE") && prepared.length > 0) {
+      const summary = await summarizeSpike(prepared);
       const briefing = await prisma.briefing.create({
         data: {
           userId: user.id,
@@ -109,8 +111,8 @@ export async function POST(request: Request): Promise<Response> {
       markers.push(toMarkerCard(marker));
     }
 
-    if (input.triggers.includes("ISSUE")) {
-      const judgement = await judgeIssue(input.messages);
+    if (input.triggers.includes("ISSUE") && prepared.length > 0) {
+      const judgement = await judgeIssue(prepared);
       if (judgement.shouldAlert) {
         const briefing = await prisma.briefing.create({
           data: {
