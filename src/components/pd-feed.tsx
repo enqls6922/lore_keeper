@@ -13,12 +13,18 @@ export function PdFeed({
   nowMs,
   onPin,
   compact = false,
+  mode = "all",
+  surface = "compact",
 }: {
   cards: BriefingCard[];
   nowMs: number;
   onPin?: (card: BriefingCard) => void;
   compact?: boolean;
+  mode?: "all" | "donations" | "radar";
+  surface?: "compact" | "studio";
 }) {
+  const cardSurface = surface === "studio" ? "border-white/10 bg-[#16181E]" : "border-white/10 bg-[#16181C]";
+  const well = surface === "studio" ? "bg-[#0B0C0E]" : "bg-[#0E0F11]";
   const radarCards = cards.filter((card) => isRadarVisible(card, nowMs));
   const donations = cards
     .filter((card) => card.type === "DONATION")
@@ -26,16 +32,17 @@ export function PdFeed({
 
   return (
     <div className="flex flex-col gap-3">
+      {mode === "donations" ? null : (
       <section aria-label="실시간 PD 레이더" className="flex flex-col gap-2">
         {radarCards.length === 0 ? (
-          <p className="rounded-[20px] border border-white/10 bg-[#16181C] px-4 py-3 text-sm font-bold text-[#8B93A7]">
+          <p className={`rounded-[20px] border px-4 py-3 text-sm font-bold text-[#8B93A7] ${cardSurface}`}>
             레이더 대기 중. 채팅이 조용하면 분석을 부르지 않습니다.
           </p>
         ) : (
           radarCards.map((card) => {
             const banner = radarBanner(card.category);
             return (
-              <article key={card.id} className="rounded-[20px] border border-[#00FFA3]/50 bg-[#16181C] px-4 py-3">
+              <article key={card.id} className={`rounded-[20px] border border-[#00FFA3]/50 px-4 py-3 ${surface === "studio" ? "bg-[#16181E]" : "bg-[#16181C]"}`}>
                 <p className="text-sm font-extrabold text-[#00FFA3]">
                   {banner.icon} {banner.title}
                 </p>
@@ -47,11 +54,13 @@ export function PdFeed({
           })
         )}
       </section>
+      )}
 
+      {mode === "radar" ? null : (
       <section aria-label="후원 요약" className="flex flex-col gap-2">
-        <h2 className="px-1 text-base font-extrabold">후원 요약</h2>
+        {mode === "donations" ? null : <h2 className="px-1 text-base font-extrabold">후원 요약</h2>}
         {donations.length === 0 ? (
-          <p className="rounded-[20px] border border-white/10 bg-[#16181C] px-4 py-6 text-base font-semibold leading-7 text-[#C4CAD8]">
+          <p className={`rounded-[20px] border px-4 py-6 text-base font-semibold leading-7 text-[#C4CAD8] ${cardSurface}`}>
             아직 올라온 후원이 없습니다. 금액과 한 줄 요약만 여기에 뜹니다.
           </p>
         ) : (
@@ -60,7 +69,7 @@ export function PdFeed({
             return (
               <article
                 key={card.id}
-                className={`rounded-[20px] border border-white/10 bg-[#16181C] px-4 py-3 ${
+                className={`rounded-[20px] border px-4 py-3 ${cardSurface} ${
                   isDonationFaded(card, nowMs) ? "opacity-40" : ""
                 }`}
               >
@@ -82,7 +91,7 @@ export function PdFeed({
                         onClick={() => {
                           onPin(card);
                         }}
-                        className={`min-h-8 min-w-8 rounded-xl text-sm ${card.isPinned ? "bg-[#FFB800]/15" : "bg-[#0E0F11]"}`}
+                        className={`min-h-8 min-w-8 rounded-xl text-sm ${card.isPinned ? "bg-[#FFB800]/15" : well}`}
                       >
                         📌
                       </button>
@@ -95,6 +104,7 @@ export function PdFeed({
           })
         )}
       </section>
+      )}
     </div>
   );
 }
