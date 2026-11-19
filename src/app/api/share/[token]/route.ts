@@ -1,6 +1,6 @@
 import { connection } from "next/server";
 
-import { isShareToken, markersForShareToken } from "@/lib/public-board";
+import { isShareToken, shareBoardForToken } from "@/lib/public-board";
 
 const NO_STORE = { "Cache-Control": "no-store" } as const;
 
@@ -15,11 +15,11 @@ export async function GET(
     return Response.json({ message: "공유 링크를 확인해 주세요." }, { status: 404, headers: NO_STORE });
   }
   try {
-    const markers = await markersForShareToken(token.trim());
-    if (!markers) {
+    const board = await shareBoardForToken(token.trim());
+    if (!board) {
       return Response.json({ message: "공유 링크를 확인해 주세요." }, { status: 404, headers: NO_STORE });
     }
-    return Response.json(markers, { headers: NO_STORE });
+    return Response.json(board, { headers: NO_STORE });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "타임라인을 불러오지 못했습니다.";
     console.error(`[GET /api/share] ${message}`);

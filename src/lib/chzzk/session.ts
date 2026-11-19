@@ -68,6 +68,58 @@ function readAccessToken(payload: unknown): string | null {
   return readString(payload.content.accessToken);
 }
 
+function readCategory(content: Record<string, unknown>): string | null {
+  const keys = ["liveCategoryValue", "liveCategory", "categoryType", "category"] as const;
+  for (const key of keys) {
+    const direct = readString(content[key]);
+    if (direct) {
+      return direct;
+    }
+  }
+  const live = isRecord(content.live) ? content.live : null;
+  if (!live) {
+    return null;
+  }
+  for (const key of keys) {
+    const nested = readString(live[key]);
+    if (nested) {
+      return nested;
+    }
+  }
+  return null;
+}
+
+/** 방송 중이면 제목과 카테고리를 가져온다. 없으면 빈 값으로 둔다. */
+export async function fetchChzzkBroadcastContext(channelId: string): Promise<{
+  title: string | null;
+  category: string | null;
+}> {
+  const empty = { title: null, category: null };
+  const encoded = encodeURIComponent(channelId);
+  try {
+    const response = await fetch(`https://api.chzzk.naver.com/service/v3.2/channels/${encoded}/live-detail`, {
+      headers: CHZZK_HEADERS,
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      return empty;
+    }
+    const payload: unknown = await response.json();
+    if (!isRecord(payload)) {
+      return empty;
+    }
+    const content = isRecord(payload.content) ? payload.content : payload;
+    const nestedLive = isRecord(content.live) ? content.live : null;
+    const title =
+      readString(content.liveTitle) ?? (nestedLive ? readString(nestedLive.liveTitle) : null);
+    return { title, category: readCategory(content) };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "upstream";
+    console.error(`[chzzk context] ${message}`);
+    return empty;
+  }
+}
+
 /**
  * 채널 ID로 라이브 제목, 채팅 채널 ID, 읽기 토큰을 가져온다.
  * 방송이 없으면 offline, 채널 자체가 없으면 not_found.

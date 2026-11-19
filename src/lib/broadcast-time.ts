@@ -10,6 +10,11 @@ export function isSeoulToday(iso: string, nowMs: number): boolean {
   return seoulSessionDate(created) === seoulSessionDate(new Date(nowMs));
 }
 
+/** 서울 오늘 0시의 UTC 시각. 오늘 생성된 행을 셀 때 쓴다. */
+export function seoulDayStart(now = new Date()): Date {
+  return new Date(`${seoulSessionDate(now)}T00:00:00+09:00`);
+}
+
 /** 서울 날짜의 방송 회차 키. `YYYY-MM-DD`. */
 export function seoulSessionDate(now = new Date()): string {
   return new Intl.DateTimeFormat("en-CA", {
