@@ -17,9 +17,12 @@ import type { ChzzkSession } from "@/lib/chzzk/session";
 import {
   RADAR_INTERVAL_MS,
   detectRadar,
+  countInWindow,
   messagesInWindow,
+  prepareRadarMessages,
   priorFiveMinuteCount,
   pushTimedChat,
+  SPIKE_WINDOW_MS,
   rememberChatTime,
   type RadarTrigger,
   type TimedChat,
@@ -125,7 +128,7 @@ async function postRadar(triggers: RadarTrigger[], messages: string[]): Promise<
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       triggers,
-      messages: messages.slice(-80),
+      messages,
       elapsedSec: broadcastElapsedSec(),
     }),
   });
@@ -137,17 +140,22 @@ async function postRadar(triggers: RadarTrigger[], messages: string[]): Promise<
 function scanRadar(buffer: TimedChat[], times: number[], lastFired: Map<RadarTrigger, number>): void {
   const now = Date.now();
   const messages = messagesInWindow(buffer, now);
-  const triggers = detectRadar(messages, messages.length, priorFiveMinuteCount(times, now)).filter((trigger) => {
+  const recentCount = countInWindow(buffer, now, SPIKE_WINDOW_MS);
+  const triggers = detectRadar(messages, recentCount, priorFiveMinuteCount(times, now)).filter((trigger) => {
     const firedAt = lastFired.get(trigger) ?? 0;
     return now - firedAt >= SIGNAL_COOLDOWN_MS;
   });
   if (triggers.length === 0) {
     return;
   }
+  const prepared = prepareRadarMessages(buffer);
+  if (prepared.length === 0) {
+    return;
+  }
   for (const trigger of triggers) {
     lastFired.set(trigger, now);
   }
-  void postRadar(triggers, messages).catch((error: unknown) => {
+  void postRadar(triggers, prepared).catch((error: unknown) => {
     for (const trigger of triggers) {
       lastFired.delete(trigger);
     }
@@ -213,7 +221,7 @@ function waitForSocket(session: ChzzkSession, stopped: () => boolean, buffer: Ti
 
 /**
  * 브라우저에서 치지직 채팅에 붙는다.
- * 일반 채팅은 최근 60초만 메모리에 두고, 30초마다 조건이 맞을 때만 레이더를 부른다.
+ * 일반 채팅은 최근 3분, 최대 1000개만 메모리에 두고, 30초마다 조건이 맞을 때만 레이더를 부른다.
  * 치즈 후원만 서버에 한 줄 요약을 요청한다.
  */
 export function useChzzkChat(channelId: string, enabled: boolean): ChzzkChatState {
